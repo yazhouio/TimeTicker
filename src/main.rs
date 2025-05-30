@@ -1,7 +1,3 @@
-// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
-// SPDX-License-Identifier: Apache-2.0
-// SPDX-License-Identifier: MIT
-
 #![allow(unused)]
 
 use tray_icon::{
@@ -30,7 +26,7 @@ impl Application {
     }
 
     fn new_tray_icon() -> TrayIcon {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/icon.png");
+        let path =  "./assets/icon.jpg";
         let icon = load_icon(std::path::Path::new(path));
 
         TrayIconBuilder::new()
@@ -80,10 +76,10 @@ impl ApplicationHandler<UserEvent> for Application {
             // Winit only exposes a redraw method on the Window so we use core-foundation directly.
             #[cfg(target_os = "macos")]
             unsafe {
-                use objc2_core_foundation::{CFRunLoopGetMain, CFRunLoopWakeUp};
+                use objc2_core_foundation::{CFRunLoop};
 
-                let rl = CFRunLoopGetMain().unwrap();
-                CFRunLoopWakeUp(&rl);
+                let rl = CFRunLoop::main().unwrap();
+                CFRunLoop::wake_up(&rl);
             }
         }
     }
@@ -110,18 +106,6 @@ fn main() {
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayIconEvent::receiver();
-
-    // Since winit doesn't use gtk on Linux, and we need gtk for
-    // the tray icon to show up, we need to spawn a thread
-    // where we initialize gtk and create the tray_icon
-    #[cfg(target_os = "linux")]
-    std::thread::spawn(|| {
-        gtk::init().unwrap();
-
-        let _tray_icon = Application::new_tray_icon();
-
-        gtk::main();
-    });
 
     if let Err(err) = event_loop.run_app(&mut app) {
         println!("Error: {:?}", err);

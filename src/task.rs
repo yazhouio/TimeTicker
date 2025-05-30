@@ -13,6 +13,7 @@ pub struct Task {
     pub is_running: bool,  // 是否正在运行
     pub start_time: Option<SystemTime>, // 开始时间
     pub remaining: Duration, // 剩余时间
+    pub pinned: bool,      // 是否固定
 }
 
 impl Task {
@@ -28,6 +29,7 @@ impl Task {
             is_running: false,
             start_time: None,
             remaining,
+            pinned: false,
         }
     }
 

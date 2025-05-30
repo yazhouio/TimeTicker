@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, Instant};
 use std::collections::HashMap;
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, MenuId},
+    menu::{Menu, MenuItem, PredefinedMenuItem, MenuId, MenuEvent as TrayMenuEvent, Submenu},
     TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconEventReceiver,
 };
 use winit::{
@@ -21,7 +21,7 @@ use parser::parse_time_input;
 #[derive(Debug)]
 enum UserEvent {
     TrayIconEvent(tray_icon::TrayIconEvent),
-    MenuEvent(tray_icon::menu::MenuEvent),
+    MenuEvent(TrayMenuEvent),
     UpdateTimer,
     StartTask(usize),
     PauseTask(usize),
@@ -33,7 +33,7 @@ struct Application {
     tray_icon: Option<TrayIcon>,
     tasks: Arc<Mutex<Vec<Task>>>,
     menu_ids: HashMap<MenuId, String>, // 菜单ID到动作的映射
-    menu_items: HashMap<usize, MenuItem>, // 任务索引到菜单项的映射，用于更新文本
+    menu_items: HashMap<usize, Submenu>, // 任务索引到子菜单的映射，用于更新文本
     control_items: HashMap<usize, MenuItem>, // 任务索引到控制按钮的映射
 }
 
@@ -88,17 +88,15 @@ impl Application {
         {
             let tasks = self.tasks.lock().unwrap();
             for (i, task) in tasks.iter().enumerate() {
-                // 显示剩余时间
+                // 显示剩余时间的子菜单
                 let time_str = format_remaining_time(task.get_remaining_time());
-                let task_item = MenuItem::new(&format!("{}#{}", time_str, task.name), true, None);
-                let task_id = task_item.id().clone();
-                self.menu_ids.insert(task_id, format!("task_{}", i));
-                self.menu_items.insert(i, task_item.clone()); // 存储菜单项引用
-                menu.append(&task_item).unwrap();
+                let task_submenu = Submenu::new(&format!("{}#{}", time_str, task.name), true);
+                self.menu_items.insert(i, task_submenu.clone()); // 存储子菜单引用
 
                 // 根据任务类型添加不同的控制选项
                 match task.task_type {
                     TaskType::Duration(_) => {
+                        // 开始/暂停
                         let start_pause = MenuItem::new(
                             if task.is_running { "暂停" } else { "开始" },
                             true,
@@ -107,33 +105,57 @@ impl Application {
                         let start_pause_id = start_pause.id().clone();
                         self.menu_ids.insert(start_pause_id, format!("toggle_{}", i));
                         self.control_items.insert(i, start_pause.clone()); // 存储控制项引用
-                        menu.append(&start_pause).unwrap();
+                        task_submenu.append(&start_pause).unwrap();
 
+                        // 重置
                         let reset = MenuItem::new("重置", true, None);
                         let reset_id = reset.id().clone();
                         self.menu_ids.insert(reset_id, format!("reset_{}", i));
-                        menu.append(&reset).unwrap();
+                        task_submenu.append(&reset).unwrap();
                     }
                     TaskType::Deadline(_) => {
                         // 截止时间类型任务不需要开始/暂停/重置
                     }
                 }
 
-                // 添加编辑和删除选项
+                // 添加分隔线
+                task_submenu.append(&PredefinedMenuItem::separator()).unwrap();
+
+                // 新增任务
+                let new_task = MenuItem::new("新增", true, None);
+                let new_task_id = new_task.id().clone();
+                self.menu_ids.insert(new_task_id, "new_task".to_string());
+                task_submenu.append(&new_task).unwrap();
+
+                // 编辑
                 let edit = MenuItem::new("编辑", true, None);
                 let edit_id = edit.id().clone();
                 self.menu_ids.insert(edit_id, format!("edit_{}", i));
-                menu.append(&edit).unwrap();
+                task_submenu.append(&edit).unwrap();
 
+                // 删除
                 let delete = MenuItem::new("删除", true, None);
                 let delete_id = delete.id().clone();
                 self.menu_ids.insert(delete_id, format!("delete_{}", i));
-                menu.append(&delete).unwrap();
+                task_submenu.append(&delete).unwrap();
 
-                // 添加分隔线
-                menu.append(&PredefinedMenuItem::separator()).unwrap();
+                // 固定/取消固定
+                let pin = MenuItem::new(
+                    if task.pinned { "取消固定" } else { "固定" },
+                    true,
+                    None
+                );
+                let pin_id = pin.id().clone();
+                self.menu_ids.insert(pin_id, format!("pin_{}", i));
+                task_submenu.append(&pin).unwrap();
+
+                // 将子菜单添加到主菜单
+                menu.append(&task_submenu).unwrap();
             }
         }
+
+        // 添加分隔线
+        menu.append(&PredefinedMenuItem::separator()).unwrap();
 
         // 添加新建任务选项
         let new_task = MenuItem::new("新建任务", true, None);
@@ -190,7 +212,7 @@ impl Application {
         }
     }
 
-    fn handle_menu_event(&mut self, event: tray_icon::menu::MenuEvent) {
+    fn handle_menu_event(&mut self, event: TrayMenuEvent) {
         let menu_id = event.id;
 
         if let Some(action) = self.menu_ids.get(&menu_id).cloned() {
@@ -238,6 +260,17 @@ impl Application {
                         }
                     }
                     self.refresh_menu(); // 刷新菜单以移除已删除的任务
+                }
+            } else if action.starts_with("pin_") {
+                // 处理固定/取消固定
+                if let Ok(index) = action.strip_prefix("pin_").unwrap().parse::<usize>() {
+                    if let Ok(mut tasks) = self.tasks.lock() {
+                        if let Some(task) = tasks.get_mut(index) {
+                            task.pinned = !task.pinned;
+                            println!("任务 '{}' {}", task.name, if task.pinned { "已固定" } else { "已取消固定" });
+                        }
+                    }
+                    self.refresh_menu(); // 刷新菜单以更新固定状态
                 }
             }
         }
@@ -334,7 +367,7 @@ fn main() {
     }));
 
     let proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |event| {
+    TrayMenuEvent::set_event_handler(Some(move |event| {
         proxy.send_event(UserEvent::MenuEvent(event));
     }));
 

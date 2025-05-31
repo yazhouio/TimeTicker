@@ -46,23 +46,22 @@ struct Application {
 }
 
 impl Application {
-    fn new() -> Application {
+    fn new() -> Self {
         // 创建一些测试任务
-        let mut test_tasks = Vec::new();
+        let mut test_tasks = vec![
+            // 添加一个1小时的截止时间任务（暂停状态）
+            Task::new(
+                "工作".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            ),
+            // 添加一个30分钟的番茄钟任务（暂停状态）
+            Task::new(
+                "学习".to_string(),
+                TaskType::Duration(Duration::from_secs(30 * 60)),
+            ),
+        ];
 
-        // 添加一个25分钟的番茄钟任务（暂停状态）
-        test_tasks.push(Task::new(
-            "番茄钟".to_string(),
-            TaskType::Duration(Duration::from_secs(25 * 60)),
-        ));
-
-        // 添加一个10分钟的休息任务（暂停状态）
-        test_tasks.push(Task::new(
-            "休息".to_string(),
-            TaskType::Duration(Duration::from_secs(10 * 60)),
-        ));
-
-        Application {
+        Self {
             tray_icon:            None,
             tasks:                Arc::new(Mutex::new(test_tasks)),
             menu_ids:             HashMap::new(),
@@ -115,7 +114,7 @@ impl Application {
             for (i, task) in tasks.iter().enumerate() {
                 // 显示剩余时间的子菜单
                 let time_str = format_remaining_time(task.get_remaining_time());
-                let task_submenu = Submenu::new(&format!("{}#{}", time_str, task.name), true);
+                let task_submenu = Submenu::new(format!("{}#{}", time_str, task.name), true);
                 self.menu_items.insert(i, task_submenu.clone()); // 存储子菜单引用
 
                 // 根据任务类型添加不同的控制选项
@@ -128,15 +127,14 @@ impl Application {
                             None,
                         );
                         let start_pause_id = start_pause.id().clone();
-                        self.menu_ids
-                            .insert(start_pause_id, format!("toggle_{}", i));
+                        self.menu_ids.insert(start_pause_id, format!("toggle_{i}"));
                         self.control_items.insert(i, start_pause.clone()); // 存储控制项引用
                         task_submenu.append(&start_pause).unwrap();
 
                         // 重置
                         let reset = MenuItem::new("重置", true, None);
                         let reset_id = reset.id().clone();
-                        self.menu_ids.insert(reset_id, format!("reset_{}", i));
+                        self.menu_ids.insert(reset_id, format!("reset_{i}"));
                         task_submenu.append(&reset).unwrap();
                     }
                     TaskType::Deadline(_) => {
@@ -158,13 +156,13 @@ impl Application {
                 // 编辑
                 let edit = MenuItem::new("编辑", true, None);
                 let edit_id = edit.id().clone();
-                self.menu_ids.insert(edit_id, format!("edit_{}", i));
+                self.menu_ids.insert(edit_id, format!("edit_{i}"));
                 task_submenu.append(&edit).unwrap();
 
                 // 删除
                 let delete = MenuItem::new("删除", true, None);
                 let delete_id = delete.id().clone();
-                self.menu_ids.insert(delete_id, format!("delete_{}", i));
+                self.menu_ids.insert(delete_id, format!("delete_{i}"));
                 task_submenu.append(&delete).unwrap();
 
                 // 固定/取消固定
@@ -178,7 +176,7 @@ impl Application {
                     None,
                 );
                 let pin_id = pin.id().clone();
-                self.menu_ids.insert(pin_id, format!("pin_{}", i));
+                self.menu_ids.insert(pin_id, format!("pin_{i}"));
                 task_submenu.append(&pin).unwrap();
 
                 // 将子菜单添加到主菜单
@@ -204,7 +202,7 @@ impl Application {
         menu
     }
 
-    fn update_tray_icon(&mut self) {
+    fn update_tray_icon(&self) {
         if let Some(tray_icon) = &self.tray_icon {
             let tasks = self.tasks.lock().unwrap();
             let mut tooltip = String::new();
@@ -217,25 +215,19 @@ impl Application {
 
                 // 更新菜单项文本（不会关闭菜单）
                 if let Some(menu_item) = self.menu_items.get(&i) {
-                    menu_item.set_text(&format!("{}#{}", time_str, task.name));
+                    menu_item.set_text(format!("{}#{}", time_str, task.name));
                 }
 
                 // 更新控制按钮文本
-                if let Some(control_item) = self.control_items.get(&i) {
-                    match task.task_type {
-                        TaskType::Duration(_) => {
-                            control_item.set_text(if task.is_running {
-                                "暂停"
-                            } else {
-                                "开始"
-                            });
-                        }
-                        _ => {}
-                    }
+                if let Some(control_item) = self.control_items.get(&i)
+                    && let TaskType::Duration(_) = task.task_type
+                {
+                    control_item.set_text(if task.is_running { "暂停" } else { "开始" });
                 }
             }
 
             tray_icon.set_tooltip(Some(&tooltip)).unwrap();
+            drop(tasks);
         }
 
         // 更新所有固定的托盘图标
@@ -291,7 +283,7 @@ impl Application {
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(&format!(
+            .with_tooltip(format!(
                 "{}#{}",
                 format_remaining_time(remaining_time),
                 task_name
@@ -312,7 +304,7 @@ impl Application {
 
         // 显示任务时间（正确显示当前剩余时间）
         let time_str = format_remaining_time(remaining_time);
-        let time_item = MenuItem::new(&format!("{}#{}", time_str, task_name), false, None);
+        let time_item = MenuItem::new(format!("{time_str}#{task_name}"), false, None);
         self.pinned_menu_items.insert(task_index, time_item.clone()); // 保存引用以便更新
         menu.append(&time_item).unwrap();
 
@@ -327,7 +319,7 @@ impl Application {
                     MenuItem::new(if is_running { "暂停" } else { "开始" }, true, None);
                 let start_pause_id = start_pause.id().clone();
                 self.menu_ids
-                    .insert(start_pause_id, format!("pinned_toggle_{}", task_index));
+                    .insert(start_pause_id, format!("pinned_toggle_{task_index}"));
                 self.pinned_control_items
                     .insert(task_index, start_pause.clone()); // 保存引用以便更新
                 menu.append(&start_pause).unwrap();
@@ -336,7 +328,7 @@ impl Application {
                 let reset = MenuItem::new("重置", true, None);
                 let reset_id = reset.id().clone();
                 self.menu_ids
-                    .insert(reset_id, format!("pinned_reset_{}", task_index));
+                    .insert(reset_id, format!("pinned_reset_{task_index}"));
                 menu.append(&reset).unwrap();
             }
             TaskType::Deadline(_) => {
@@ -351,7 +343,7 @@ impl Application {
         let unpin = MenuItem::new("取消固定", true, None);
         let unpin_id = unpin.id().clone();
         self.menu_ids
-            .insert(unpin_id, format!("unpin_{}", task_index));
+            .insert(unpin_id, format!("unpin_{task_index}"));
         menu.append(&unpin).unwrap();
 
         menu
@@ -363,7 +355,7 @@ impl Application {
         self.pinned_control_items.remove(&task_index);
     }
 
-    fn update_pinned_tray_icon(&mut self, task_index: usize) {
+    fn update_pinned_tray_icon(&self, task_index: usize) {
         // 先获取任务信息
         let (task_name, task_type, is_running, remaining_time) = {
             if let Ok(tasks) = self.tasks.lock() {
@@ -385,7 +377,7 @@ impl Application {
         // 更新托盘图标
         if let Some(tray_icon) = self.pinned_tray_icons.get(&task_index) {
             let time_str = format_remaining_time(remaining_time);
-            let tooltip = format!("{}#{}", time_str, task_name);
+            let tooltip = format!("{time_str}#{task_name}");
 
             // 使用文本标题显示时间，格式：MM:SS
             let parts: Vec<&str> = time_str.split(':').collect();
@@ -402,14 +394,14 @@ impl Application {
         // 更新固定菜单中的时间显示项（不重新构建菜单，避免菜单消失）
         if let Some(menu_item) = self.pinned_menu_items.get(&task_index) {
             let time_str = format_remaining_time(remaining_time);
-            menu_item.set_text(&format!("{}#{}", time_str, task_name));
+            menu_item.set_text(format!("{time_str}#{task_name}"));
         }
 
         // 更新固定菜单中的控制按钮文本
-        if let Some(control_item) = self.pinned_control_items.get(&task_index) {
-            if let TaskType::Duration(_) = task_type {
-                control_item.set_text(if is_running { "暂停" } else { "开始" });
-            }
+        if let Some(control_item) = self.pinned_control_items.get(&task_index)
+            && let TaskType::Duration(_) = task_type
+        {
+            control_item.set_text(if is_running { "暂停" } else { "开始" });
         }
     }
 
@@ -436,7 +428,7 @@ impl Application {
             let seconds = parts[2];
 
             // 绘制时间数字（更大的字体，更好的间距）
-            let display_time = format!("{}:{}", minutes, seconds);
+            let display_time = format!("{minutes}:{seconds}");
             self.draw_large_text(&mut img, &display_time, 1, 10);
         } else {
             // 如果解析失败，显示时钟图标
@@ -506,7 +498,7 @@ impl Application {
                 let dy = (y as i32 - 16).abs();
                 let distance = ((dx * dx + dy * dy) as f32).sqrt();
 
-                if distance >= 6.0 && distance <= 8.0 {
+                if (6.0..=8.0).contains(&distance) {
                     img.put_pixel(x, y, white);
                 }
             }
@@ -751,6 +743,7 @@ impl Application {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn handle_menu_event(&mut self, event: TrayMenuEvent) {
         let menu_id = event.id;
 
@@ -769,15 +762,15 @@ impl Application {
             } else if action.starts_with("toggle_") {
                 // 处理开始/暂停
                 if let Ok(index) = action.strip_prefix("toggle_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock() {
-                        if let Some(task) = tasks.get_mut(index) {
-                            if task.is_running {
-                                task.pause();
-                                info!("⏸️ 任务 '{}' 已暂停", task.name);
-                            } else {
-                                task.start();
-                                info!("▶️ 任务 '{}' 已开始", task.name);
-                            }
+                    if let Ok(mut tasks) = self.tasks.lock()
+                        && let Some(task) = tasks.get_mut(index)
+                    {
+                        if task.is_running {
+                            task.pause();
+                            info!("⏸️ 任务 '{}' 已暂停", task.name);
+                        } else {
+                            task.start();
+                            info!("▶️ 任务 '{}' 已开始", task.name);
                         }
                     }
                     self.refresh_menu(); // 刷新菜单以更新按钮文本
@@ -785,11 +778,11 @@ impl Application {
             } else if action.starts_with("reset_") {
                 // 处理重置
                 if let Ok(index) = action.strip_prefix("reset_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock() {
-                        if let Some(task) = tasks.get_mut(index) {
-                            task.reset();
-                            info!("🔄 任务 '{}' 已重置", task.name);
-                        }
+                    if let Ok(mut tasks) = self.tasks.lock()
+                        && let Some(task) = tasks.get_mut(index)
+                    {
+                        task.reset();
+                        info!("🔄 任务 '{}' 已重置", task.name);
                     }
                     self.refresh_menu(); // 刷新菜单以更新状态
                 }
@@ -799,12 +792,12 @@ impl Application {
             } else if action.starts_with("delete_") {
                 // 处理删除
                 if let Ok(index) = action.strip_prefix("delete_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock() {
-                        if index < tasks.len() {
-                            let task_name = tasks[index].name.clone();
-                            tasks.remove(index);
-                            warn!("🗑️ 任务 '{}' 已删除", task_name);
-                        }
+                    if let Ok(mut tasks) = self.tasks.lock()
+                        && index < tasks.len()
+                    {
+                        let task_name = tasks[index].name.clone();
+                        tasks.remove(index);
+                        warn!("🗑️ 任务 '{}' 已删除", task_name);
                     }
                     self.refresh_menu(); // 刷新菜单以移除已删除的任务
                 }
@@ -865,15 +858,15 @@ impl Application {
                     .unwrap()
                     .parse::<usize>()
                 {
-                    if let Ok(mut tasks) = self.tasks.lock() {
-                        if let Some(task) = tasks.get_mut(index) {
-                            if task.is_running {
-                                task.pause();
-                                info!("⏸️ 固定任务 '{}' 已暂停", task.name);
-                            } else {
-                                task.start();
-                                info!("▶️ 固定任务 '{}' 已开始", task.name);
-                            }
+                    if let Ok(mut tasks) = self.tasks.lock()
+                        && let Some(task) = tasks.get_mut(index)
+                    {
+                        if task.is_running {
+                            task.pause();
+                            info!("⏸️ 固定任务 '{}' 已暂停", task.name);
+                        } else {
+                            task.start();
+                            info!("▶️ 固定任务 '{}' 已开始", task.name);
                         }
                     }
                     // 刷新主菜单和固定托盘图标
@@ -887,11 +880,11 @@ impl Application {
                     .unwrap()
                     .parse::<usize>()
                 {
-                    if let Ok(mut tasks) = self.tasks.lock() {
-                        if let Some(task) = tasks.get_mut(index) {
-                            task.reset();
-                            info!("🔄 固定任务 '{}' 已重置", task.name);
-                        }
+                    if let Ok(mut tasks) = self.tasks.lock()
+                        && let Some(task) = tasks.get_mut(index)
+                    {
+                        task.reset();
+                        info!("🔄 固定任务 '{}' 已重置", task.name);
                     }
                     // 刷新主菜单和固定托盘图标
                     self.refresh_menu();
@@ -952,24 +945,24 @@ impl ApplicationHandler<UserEvent> for Application {
                 ));
             }
             UserEvent::StartTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock() {
-                    if let Some(task) = tasks.get_mut(index) {
-                        task.start();
-                    }
+                if let Ok(mut tasks) = self.tasks.lock()
+                    && let Some(task) = tasks.get_mut(index)
+                {
+                    task.start();
                 }
             }
             UserEvent::PauseTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock() {
-                    if let Some(task) = tasks.get_mut(index) {
-                        task.pause();
-                    }
+                if let Ok(mut tasks) = self.tasks.lock()
+                    && let Some(task) = tasks.get_mut(index)
+                {
+                    task.pause();
                 }
             }
             UserEvent::ResetTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock() {
-                    if let Some(task) = tasks.get_mut(index) {
-                        task.reset();
-                    }
+                if let Ok(mut tasks) = self.tasks.lock()
+                    && let Some(task) = tasks.get_mut(index)
+                {
+                    task.reset();
                 }
             }
             UserEvent::DeleteTask(index) => {
@@ -986,7 +979,7 @@ fn format_remaining_time(duration: Duration) -> String {
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 fn main() {

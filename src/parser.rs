@@ -23,9 +23,8 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
     let time_str = caps.get(1).unwrap().as_str().trim();
     let name = caps.get(2).map_or("未命名", |m| m.as_str()).to_string();
 
-    if time_str.starts_with('@') {
+    if let Some(time_str) = time_str.strip_prefix('@') {
         // 处理截止时间格式 (@HH:MM)
-        let time_str = &time_str[1..];
         let time = NaiveTime::parse_from_str(time_str, "%H:%M").map_err(|_| {
             ParseError::InvalidFormat {
                 msg: "Invalid time format".to_string(),
@@ -35,7 +34,7 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
         let now = Local::now();
         let mut deadline = now.date_naive().and_time(time);
         if deadline < now.naive_local() {
-            deadline = deadline + chrono::Duration::days(1);
+            deadline += chrono::Duration::days(1);
         }
 
         Ok((

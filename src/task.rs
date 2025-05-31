@@ -45,11 +45,10 @@ impl Task {
     pub fn pause(&mut self) {
         if self.is_running {
             self.is_running = false;
-            if let Some(start) = self.start_time {
-                if let Ok(elapsed) = start.elapsed() {
+            if let Some(start) = self.start_time
+                && let Ok(elapsed) = start.elapsed() {
                     self.remaining = self.remaining.saturating_sub(elapsed);
                 }
-            }
             self.start_time = None;
         }
     }
@@ -70,11 +69,10 @@ impl Task {
             return self.remaining;
         }
 
-        if let Some(start) = self.start_time {
-            if let Ok(elapsed) = start.elapsed() {
+        if let Some(start) = self.start_time
+            && let Ok(elapsed) = start.elapsed() {
                 return self.remaining.saturating_sub(elapsed);
             }
-        }
         self.remaining
     }
 }

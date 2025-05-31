@@ -1,24 +1,25 @@
 #![allow(unused)]
 
-mod task;
 mod parser;
+mod task;
 
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, Instant};
-use std::collections::HashMap;
-use tray_icon::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, MenuId, MenuEvent as TrayMenuEvent, Submenu},
-    TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconEventReceiver, Icon,
-};
 use image::{ImageBuffer, Rgba, RgbaImage};
-use tracing::{info, warn, error, debug, trace};
+use parser::parse_time_input;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+use task::{Task, TaskType};
+use tracing::{debug, error, info, trace, warn};
+use tray_icon::{
+    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconEventReceiver,
+    menu::{Menu, MenuEvent as TrayMenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
+};
+use winit::window::Window;
 use winit::{
     application::ApplicationHandler,
     event::Event,
     event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
 };
-use task::{Task, TaskType};
-use parser::parse_time_input;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -34,8 +35,8 @@ enum UserEvent {
 struct Application {
     tray_icon: Option<TrayIcon>,
     tasks: Arc<Mutex<Vec<Task>>>,
-    menu_ids: HashMap<MenuId, String>, // 菜单ID到动作的映射
-    menu_items: HashMap<usize, Submenu>, // 任务索引到子菜单的映射，用于更新文本
+    menu_ids: HashMap<MenuId, String>,       // 菜单ID到动作的映射
+    menu_items: HashMap<usize, Submenu>,     // 任务索引到子菜单的映射，用于更新文本
     control_items: HashMap<usize, MenuItem>, // 任务索引到控制按钮的映射
     pinned_tray_icons: HashMap<usize, TrayIcon>, // 固定任务的独立托盘图标
     pinned_menu_items: HashMap<usize, MenuItem>, // 固定托盘菜单中的时间显示项
@@ -50,13 +51,13 @@ impl Application {
         // 添加一个25分钟的番茄钟任务（暂停状态）
         test_tasks.push(Task::new(
             "番茄钟".to_string(),
-            TaskType::Duration(Duration::from_secs(25 * 60))
+            TaskType::Duration(Duration::from_secs(25 * 60)),
         ));
 
         // 添加一个10分钟的休息任务（暂停状态）
         test_tasks.push(Task::new(
             "休息".to_string(),
-            TaskType::Duration(Duration::from_secs(10 * 60))
+            TaskType::Duration(Duration::from_secs(10 * 60)),
         ));
 
         Application {
@@ -90,7 +91,9 @@ impl Application {
         let menu = Menu::new();
 
         // 保存固定托盘菜单的ID，避免被清除
-        let pinned_menu_ids: Vec<(MenuId, String)> = self.menu_ids.iter()
+        let pinned_menu_ids: Vec<(MenuId, String)> = self
+            .menu_ids
+            .iter()
             .filter(|(_, action)| action.starts_with("pinned_") || action.starts_with("unpin_"))
             .map(|(id, action)| (id.clone(), action.clone()))
             .collect();
@@ -123,7 +126,8 @@ impl Application {
                             None,
                         );
                         let start_pause_id = start_pause.id().clone();
-                        self.menu_ids.insert(start_pause_id, format!("toggle_{}", i));
+                        self.menu_ids
+                            .insert(start_pause_id, format!("toggle_{}", i));
                         self.control_items.insert(i, start_pause.clone()); // 存储控制项引用
                         task_submenu.append(&start_pause).unwrap();
 
@@ -139,7 +143,9 @@ impl Application {
                 }
 
                 // 添加分隔线
-                task_submenu.append(&PredefinedMenuItem::separator()).unwrap();
+                task_submenu
+                    .append(&PredefinedMenuItem::separator())
+                    .unwrap();
 
                 // 新增任务
                 let new_task = MenuItem::new("新增", true, None);
@@ -161,9 +167,13 @@ impl Application {
 
                 // 固定/取消固定
                 let pin = MenuItem::new(
-                    if task.pinned { "取消固定" } else { "固定" },
+                    if task.pinned {
+                        "取消固定"
+                    } else {
+                        "固定"
+                    },
                     true,
-                    None
+                    None,
                 );
                 let pin_id = pin.id().clone();
                 self.menu_ids.insert(pin_id, format!("pin_{}", i));
@@ -203,8 +213,6 @@ impl Application {
                 let time_str = format_remaining_time(remaining);
                 tooltip.push_str(&format!("{}#{}\n", time_str, task.name));
 
-
-
                 // 更新菜单项文本（不会关闭菜单）
                 if let Some(menu_item) = self.menu_items.get(&i) {
                     menu_item.set_text(&format!("{}#{}", time_str, task.name));
@@ -214,7 +222,11 @@ impl Application {
                 if let Some(control_item) = self.control_items.get(&i) {
                     match task.task_type {
                         TaskType::Duration(_) => {
-                            control_item.set_text(if task.is_running { "暂停" } else { "开始" });
+                            control_item.set_text(if task.is_running {
+                                "暂停"
+                            } else {
+                                "开始"
+                            });
                         }
                         _ => {}
                     }
@@ -246,14 +258,25 @@ impl Application {
         let (task_name, task_type, is_running, remaining_time) = {
             let tasks = self.tasks.lock().unwrap();
             if let Some(task) = tasks.get(task_index) {
-                (task.name.clone(), task.task_type.clone(), task.is_running, task.get_remaining_time())
+                (
+                    task.name.clone(),
+                    task.task_type.clone(),
+                    task.is_running,
+                    task.get_remaining_time(),
+                )
             } else {
                 return;
             }
         };
 
         // 现在可以安全地调用 build_pinned_task_menu
-        let menu = self.build_pinned_task_menu(task_index, &task_name, &task_type, is_running, remaining_time);
+        let menu = self.build_pinned_task_menu(
+            task_index,
+            &task_name,
+            &task_type,
+            is_running,
+            remaining_time,
+        );
 
         // 使用时间文本作为标题，格式：MM:SS
         let time_str = format_remaining_time(remaining_time);
@@ -266,7 +289,11 @@ impl Application {
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(&format!("{}#{}", format_remaining_time(remaining_time), task_name))
+            .with_tooltip(&format!(
+                "{}#{}",
+                format_remaining_time(remaining_time),
+                task_name
+            ))
             .with_icon(icon)
             .with_title(&time_title)
             .build()
@@ -275,7 +302,14 @@ impl Application {
         self.pinned_tray_icons.insert(task_index, tray_icon);
     }
 
-    fn build_pinned_task_menu(&mut self, task_index: usize, task_name: &str, task_type: &TaskType, is_running: bool, remaining_time: Duration) -> Menu {
+    fn build_pinned_task_menu(
+        &mut self,
+        task_index: usize,
+        task_name: &str,
+        task_type: &TaskType,
+        is_running: bool,
+        remaining_time: Duration,
+    ) -> Menu {
         let menu = Menu::new();
 
         // 显示任务时间（正确显示当前剩余时间）
@@ -291,20 +325,20 @@ impl Application {
         match task_type {
             TaskType::Duration(_) => {
                 // 开始/暂停
-                let start_pause = MenuItem::new(
-                    if is_running { "暂停" } else { "开始" },
-                    true,
-                    None,
-                );
+                let start_pause =
+                    MenuItem::new(if is_running { "暂停" } else { "开始" }, true, None);
                 let start_pause_id = start_pause.id().clone();
-                self.menu_ids.insert(start_pause_id, format!("pinned_toggle_{}", task_index));
-                self.pinned_control_items.insert(task_index, start_pause.clone()); // 保存引用以便更新
+                self.menu_ids
+                    .insert(start_pause_id, format!("pinned_toggle_{}", task_index));
+                self.pinned_control_items
+                    .insert(task_index, start_pause.clone()); // 保存引用以便更新
                 menu.append(&start_pause).unwrap();
 
                 // 重置
                 let reset = MenuItem::new("重置", true, None);
                 let reset_id = reset.id().clone();
-                self.menu_ids.insert(reset_id, format!("pinned_reset_{}", task_index));
+                self.menu_ids
+                    .insert(reset_id, format!("pinned_reset_{}", task_index));
                 menu.append(&reset).unwrap();
             }
             TaskType::Deadline(_) => {
@@ -318,7 +352,8 @@ impl Application {
         // 取消固定
         let unpin = MenuItem::new("取消固定", true, None);
         let unpin_id = unpin.id().clone();
-        self.menu_ids.insert(unpin_id, format!("unpin_{}", task_index));
+        self.menu_ids
+            .insert(unpin_id, format!("unpin_{}", task_index));
         menu.append(&unpin).unwrap();
 
         menu
@@ -335,7 +370,12 @@ impl Application {
         let (task_name, task_type, is_running, remaining_time) = {
             if let Ok(tasks) = self.tasks.lock() {
                 if let Some(task) = tasks.get(task_index) {
-                    (task.name.clone(), task.task_type.clone(), task.is_running, task.get_remaining_time())
+                    (
+                        task.name.clone(),
+                        task.task_type.clone(),
+                        task.is_running,
+                        task.get_remaining_time(),
+                    )
                 } else {
                     return;
                 }
@@ -487,112 +527,52 @@ impl Application {
 
     // 简单的3x5像素字体
     fn draw_digit_0(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [1, 0, 1],
-            [1, 0, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_1(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [0, 1, 0],
-            [1, 1, 0],
-            [0, 1, 0],
-            [0, 1, 0],
-            [1, 1, 1],
-        ];
+        let pattern = [[0, 1, 0], [1, 1, 0], [0, 1, 0], [0, 1, 0], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_2(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [0, 0, 1],
-            [1, 1, 1],
-            [1, 0, 0],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 0], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_3(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [0, 0, 1],
-            [1, 1, 1],
-            [0, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [0, 0, 1], [1, 1, 1], [0, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_4(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 0, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-            [0, 0, 1],
-            [0, 0, 1],
-        ];
+        let pattern = [[1, 0, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [0, 0, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_5(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [1, 0, 0],
-            [1, 1, 1],
-            [0, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [1, 0, 0], [1, 1, 1], [0, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_6(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [1, 0, 0],
-            [1, 1, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [1, 0, 0], [1, 1, 1], [1, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_7(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [0, 0, 1],
-            [0, 0, 1],
-            [0, 0, 1],
-            [0, 0, 1],
-        ];
+        let pattern = [[1, 1, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_8(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
     fn draw_digit_9(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
-        let pattern = [
-            [1, 1, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-            [0, 0, 1],
-            [1, 1, 1],
-        ];
+        let pattern = [[1, 1, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [1, 1, 1]];
         self.draw_pattern(img, x, y, &pattern, color);
     }
 
@@ -603,7 +583,14 @@ impl Application {
         }
     }
 
-    fn draw_pattern(&self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 3]; 5], color: Rgba<u8>) {
+    fn draw_pattern(
+        &self,
+        img: &mut RgbaImage,
+        x: u32,
+        y: u32,
+        pattern: &[[u8; 3]; 5],
+        color: Rgba<u8>,
+    ) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
                 if pixel == 1 {
@@ -618,7 +605,14 @@ impl Application {
     }
 
     // 大字体绘制方法 (5x7 像素)
-    fn draw_large_pattern(&self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 5]; 7], color: Rgba<u8>) {
+    fn draw_large_pattern(
+        &self,
+        img: &mut RgbaImage,
+        x: u32,
+        y: u32,
+        pattern: &[[u8; 5]; 7],
+        color: Rgba<u8>,
+    ) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
                 if pixel == 1 {
@@ -878,7 +872,11 @@ impl Application {
                 }
             } else if action.starts_with("pinned_toggle_") {
                 // 处理固定托盘图标的开始/暂停
-                if let Ok(index) = action.strip_prefix("pinned_toggle_").unwrap().parse::<usize>() {
+                if let Ok(index) = action
+                    .strip_prefix("pinned_toggle_")
+                    .unwrap()
+                    .parse::<usize>()
+                {
                     if let Ok(mut tasks) = self.tasks.lock() {
                         if let Some(task) = tasks.get_mut(index) {
                             if task.is_running {
@@ -896,7 +894,11 @@ impl Application {
                 }
             } else if action.starts_with("pinned_reset_") {
                 // 处理固定托盘图标的重置
-                if let Ok(index) = action.strip_prefix("pinned_reset_").unwrap().parse::<usize>() {
+                if let Ok(index) = action
+                    .strip_prefix("pinned_reset_")
+                    .unwrap()
+                    .parse::<usize>()
+                {
                     if let Ok(mut tasks) = self.tasks.lock() {
                         if let Some(task) = tasks.get_mut(index) {
                             task.reset();
@@ -919,7 +921,11 @@ impl Application {
 }
 
 impl ApplicationHandler<UserEvent> for Application {
-    fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window = event_loop
+            .create_window(Window::default_attributes())
+            .unwrap();
+    }
 
     fn window_event(
         &mut self,
@@ -936,10 +942,10 @@ impl ApplicationHandler<UserEvent> for Application {
     ) {
         if winit::event::StartCause::Init == cause {
             self.tray_icon = Some(self.new_tray_icon());
-            
+
             #[cfg(target_os = "macos")]
             unsafe {
-                use objc2_core_foundation::{CFRunLoop};
+                use objc2_core_foundation::CFRunLoop;
                 let rl = CFRunLoop::main().unwrap();
                 CFRunLoop::wake_up(&rl);
             }
@@ -1003,7 +1009,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "time_ticker=debug,info".into())
+                .unwrap_or_else(|_| "time_ticker=debug,info".into()),
         )
         .with_target(false)
         .with_thread_ids(false)

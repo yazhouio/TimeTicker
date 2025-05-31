@@ -8,21 +8,19 @@ pub enum TaskType {
 
 #[derive(Debug, Clone)]
 pub struct Task {
-    pub name:       String, // 任务名称（标签）
-    pub task_type:  TaskType,
+    pub name: String, // 任务名称（标签）
+    pub task_type: TaskType,
     pub is_running: bool,               // 是否正在运行
     pub start_time: Option<SystemTime>, // 开始时间
-    pub remaining:  Duration,           // 剩余时间
-    pub pinned:     bool,               // 是否固定
+    pub remaining: Duration,            // 剩余时间
+    pub pinned: bool,                   // 是否固定
 }
 
 impl Task {
     pub fn new(name: String, task_type: TaskType) -> Self {
         let remaining = match &task_type {
             TaskType::Duration(d) => *d,
-            TaskType::Deadline(t) => t
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO),
+            TaskType::Deadline(t) => t.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO),
         };
 
         Self {
@@ -46,9 +44,10 @@ impl Task {
         if self.is_running {
             self.is_running = false;
             if let Some(start) = self.start_time
-                && let Ok(elapsed) = start.elapsed() {
-                    self.remaining = self.remaining.saturating_sub(elapsed);
-                }
+                && let Ok(elapsed) = start.elapsed()
+            {
+                self.remaining = self.remaining.saturating_sub(elapsed);
+            }
             self.start_time = None;
         }
     }
@@ -58,9 +57,7 @@ impl Task {
         self.start_time = None;
         self.remaining = match &self.task_type {
             TaskType::Duration(d) => *d,
-            TaskType::Deadline(t) => t
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO),
+            TaskType::Deadline(t) => t.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO),
         };
     }
 
@@ -70,9 +67,10 @@ impl Task {
         }
 
         if let Some(start) = self.start_time
-            && let Ok(elapsed) = start.elapsed() {
-                return self.remaining.saturating_sub(elapsed);
-            }
+            && let Ok(elapsed) = start.elapsed()
+        {
+            return self.remaining.saturating_sub(elapsed);
+        }
         self.remaining
     }
 }

@@ -1,8 +1,10 @@
-use crate::task::TaskType;
+use std::time::{Duration, SystemTime};
+
 use chrono::{Local, NaiveTime};
 use regex::Regex;
 use snafu::{ResultExt, Snafu};
-use std::time::{Duration, SystemTime};
+
+use crate::task::TaskType;
 
 #[derive(Debug, Snafu)]
 pub enum ParseError {
@@ -14,21 +16,17 @@ pub enum ParseError {
 
 pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
     let re = Regex::new(r"^(.*?)(?:#(.+))?$").unwrap();
-    let caps = re
-        .captures(input)
-        .ok_or_else(|| ParseError::InvalidFormat {
-            msg: "Invalid input format".to_string(),
-        })?;
+    let caps = re.captures(input).ok_or_else(|| ParseError::InvalidFormat {
+        msg: "Invalid input format".to_string(),
+    })?;
 
     let time_str = caps.get(1).unwrap().as_str().trim();
     let name = caps.get(2).map_or("未命名", |m| m.as_str()).to_string();
 
     if let Some(time_str) = time_str.strip_prefix('@') {
         // 处理截止时间格式 (@HH:MM)
-        let time = NaiveTime::parse_from_str(time_str, "%H:%M").map_err(|_| {
-            ParseError::InvalidFormat {
-                msg: "Invalid time format".to_string(),
-            }
+        let time = NaiveTime::parse_from_str(time_str, "%H:%M").map_err(|_| ParseError::InvalidFormat {
+            msg: "Invalid time format".to_string(),
         })?;
 
         let now = Local::now();

@@ -3,13 +3,14 @@
 mod parser;
 mod task;
 
-use image::{ImageBuffer, Rgba, RgbaImage};
-use parser::parse_time_input;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
+
+use image::{ImageBuffer, Rgba, RgbaImage};
+use parser::parse_time_input;
 use task::{Task, TaskType};
 use tracing::{debug, error, info, trace, warn};
 use tray_icon::{
@@ -35,13 +36,13 @@ enum UserEvent {
 }
 
 struct Application {
-    tray_icon:            Option<TrayIcon>,
-    tasks:                Arc<Mutex<Vec<Task>>>,
-    menu_ids:             HashMap<MenuId, String>, // 菜单ID到动作的映射
-    menu_items:           HashMap<usize, Submenu>, // 任务索引到子菜单的映射，用于更新文本
-    control_items:        HashMap<usize, MenuItem>, // 任务索引到控制按钮的映射
-    pinned_tray_icons:    HashMap<usize, TrayIcon>, // 固定任务的独立托盘图标
-    pinned_menu_items:    HashMap<usize, MenuItem>, // 固定托盘菜单中的时间显示项
+    tray_icon: Option<TrayIcon>,
+    tasks: Arc<Mutex<Vec<Task>>>,
+    menu_ids: HashMap<MenuId, String>,              // 菜单ID到动作的映射
+    menu_items: HashMap<usize, Submenu>,            // 任务索引到子菜单的映射，用于更新文本
+    control_items: HashMap<usize, MenuItem>,        // 任务索引到控制按钮的映射
+    pinned_tray_icons: HashMap<usize, TrayIcon>,    // 固定任务的独立托盘图标
+    pinned_menu_items: HashMap<usize, MenuItem>,    // 固定托盘菜单中的时间显示项
     pinned_control_items: HashMap<usize, MenuItem>, // 固定托盘菜单中的控制按钮
 }
 
@@ -55,20 +56,17 @@ impl Application {
                 TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
             ),
             // 添加一个30分钟的番茄钟任务（暂停状态）
-            Task::new(
-                "学习".to_string(),
-                TaskType::Duration(Duration::from_secs(30 * 60)),
-            ),
+            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
         ];
 
         Self {
-            tray_icon:            None,
-            tasks:                Arc::new(Mutex::new(test_tasks)),
-            menu_ids:             HashMap::new(),
-            menu_items:           HashMap::new(),
-            control_items:        HashMap::new(),
-            pinned_tray_icons:    HashMap::new(),
-            pinned_menu_items:    HashMap::new(),
+            tray_icon: None,
+            tasks: Arc::new(Mutex::new(test_tasks)),
+            menu_ids: HashMap::new(),
+            menu_items: HashMap::new(),
+            control_items: HashMap::new(),
+            pinned_tray_icons: HashMap::new(),
+            pinned_menu_items: HashMap::new(),
             pinned_control_items: HashMap::new(),
         }
     }
@@ -121,11 +119,7 @@ impl Application {
                 match task.task_type {
                     TaskType::Duration(_) => {
                         // 开始/暂停
-                        let start_pause = MenuItem::new(
-                            if task.is_running { "暂停" } else { "开始" },
-                            true,
-                            None,
-                        );
+                        let start_pause = MenuItem::new(if task.is_running { "暂停" } else { "开始" }, true, None);
                         let start_pause_id = start_pause.id().clone();
                         self.menu_ids.insert(start_pause_id, format!("toggle_{i}"));
                         self.control_items.insert(i, start_pause.clone()); // 存储控制项引用
@@ -143,9 +137,7 @@ impl Application {
                 }
 
                 // 添加分隔线
-                task_submenu
-                    .append(&PredefinedMenuItem::separator())
-                    .unwrap();
+                task_submenu.append(&PredefinedMenuItem::separator()).unwrap();
 
                 // 新增任务
                 let new_task = MenuItem::new("新增", true, None);
@@ -166,15 +158,7 @@ impl Application {
                 task_submenu.append(&delete).unwrap();
 
                 // 固定/取消固定
-                let pin = MenuItem::new(
-                    if task.pinned {
-                        "取消固定"
-                    } else {
-                        "固定"
-                    },
-                    true,
-                    None,
-                );
+                let pin = MenuItem::new(if task.pinned { "取消固定" } else { "固定" }, true, None);
                 let pin_id = pin.id().clone();
                 self.menu_ids.insert(pin_id, format!("pin_{i}"));
                 task_submenu.append(&pin).unwrap();
@@ -264,13 +248,7 @@ impl Application {
         };
 
         // 现在可以安全地调用 build_pinned_task_menu
-        let menu = self.build_pinned_task_menu(
-            task_index,
-            &task_name,
-            &task_type,
-            is_running,
-            remaining_time,
-        );
+        let menu = self.build_pinned_task_menu(task_index, &task_name, &task_type, is_running, remaining_time);
 
         // 使用时间文本作为标题，格式：MM:SS
         let time_str = format_remaining_time(remaining_time);
@@ -283,11 +261,7 @@ impl Application {
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(format!(
-                "{}#{}",
-                format_remaining_time(remaining_time),
-                task_name
-            ))
+            .with_tooltip(format!("{}#{}", format_remaining_time(remaining_time), task_name))
             .with_icon(icon)
             .with_title(&time_title)
             .build()
@@ -297,7 +271,11 @@ impl Application {
     }
 
     fn build_pinned_task_menu(
-        &mut self, task_index: usize, task_name: &str, task_type: &TaskType, is_running: bool,
+        &mut self,
+        task_index: usize,
+        task_name: &str,
+        task_type: &TaskType,
+        is_running: bool,
         remaining_time: Duration,
     ) -> Menu {
         let menu = Menu::new();
@@ -315,20 +293,17 @@ impl Application {
         match task_type {
             TaskType::Duration(_) => {
                 // 开始/暂停
-                let start_pause =
-                    MenuItem::new(if is_running { "暂停" } else { "开始" }, true, None);
+                let start_pause = MenuItem::new(if is_running { "暂停" } else { "开始" }, true, None);
                 let start_pause_id = start_pause.id().clone();
                 self.menu_ids
                     .insert(start_pause_id, format!("pinned_toggle_{task_index}"));
-                self.pinned_control_items
-                    .insert(task_index, start_pause.clone()); // 保存引用以便更新
+                self.pinned_control_items.insert(task_index, start_pause.clone()); // 保存引用以便更新
                 menu.append(&start_pause).unwrap();
 
                 // 重置
                 let reset = MenuItem::new("重置", true, None);
                 let reset_id = reset.id().clone();
-                self.menu_ids
-                    .insert(reset_id, format!("pinned_reset_{task_index}"));
+                self.menu_ids.insert(reset_id, format!("pinned_reset_{task_index}"));
                 menu.append(&reset).unwrap();
             }
             TaskType::Deadline(_) => {
@@ -342,8 +317,7 @@ impl Application {
         // 取消固定
         let unpin = MenuItem::new("取消固定", true, None);
         let unpin_id = unpin.id().clone();
-        self.menu_ids
-            .insert(unpin_id, format!("unpin_{task_index}"));
+        self.menu_ids.insert(unpin_id, format!("unpin_{task_index}"));
         menu.append(&unpin).unwrap();
 
         menu
@@ -573,9 +547,7 @@ impl Application {
         }
     }
 
-    fn draw_pattern(
-        &self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 3]; 5], color: Rgba<u8>,
-    ) {
+    fn draw_pattern(&self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 3]; 5], color: Rgba<u8>) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
                 if pixel == 1 {
@@ -590,9 +562,7 @@ impl Application {
     }
 
     // 大字体绘制方法 (5x7 像素)
-    fn draw_large_pattern(
-        &self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 5]; 7], color: Rgba<u8>,
-    ) {
+    fn draw_large_pattern(&self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 5]; 7], color: Rgba<u8>) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
                 if pixel == 1 {
@@ -853,11 +823,7 @@ impl Application {
                 }
             } else if action.starts_with("pinned_toggle_") {
                 // 处理固定托盘图标的开始/暂停
-                if let Ok(index) = action
-                    .strip_prefix("pinned_toggle_")
-                    .unwrap()
-                    .parse::<usize>()
-                {
+                if let Ok(index) = action.strip_prefix("pinned_toggle_").unwrap().parse::<usize>() {
                     if let Ok(mut tasks) = self.tasks.lock()
                         && let Some(task) = tasks.get_mut(index)
                     {
@@ -875,11 +841,7 @@ impl Application {
                 }
             } else if action.starts_with("pinned_reset_") {
                 // 处理固定托盘图标的重置
-                if let Ok(index) = action
-                    .strip_prefix("pinned_reset_")
-                    .unwrap()
-                    .parse::<usize>()
-                {
+                if let Ok(index) = action.strip_prefix("pinned_reset_").unwrap().parse::<usize>() {
                     if let Ok(mut tasks) = self.tasks.lock()
                         && let Some(task) = tasks.get_mut(index)
                     {
@@ -903,21 +865,18 @@ impl Application {
 
 impl ApplicationHandler<UserEvent> for Application {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = event_loop
-            .create_window(Window::default_attributes())
-            .unwrap();
+        let window = event_loop.create_window(Window::default_attributes()).unwrap();
     }
 
     fn window_event(
-        &mut self, _event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId, _event: winit::event::WindowEvent,
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        _event: winit::event::WindowEvent,
     ) {
     }
 
-    fn new_events(
-        &mut self, _event_loop: &winit::event_loop::ActiveEventLoop,
-        cause: winit::event::StartCause,
-    ) {
+    fn new_events(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, cause: winit::event::StartCause) {
         if winit::event::StartCause::Init == cause {
             self.tray_icon = Some(self.new_tray_icon());
 
@@ -940,9 +899,7 @@ impl ApplicationHandler<UserEvent> for Application {
             }
             UserEvent::UpdateTimer => {
                 self.update_tray_icon(); // 现在使用set_text()更新，不会关闭菜单
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + Duration::from_secs(1),
-                ));
+                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
             }
             UserEvent::StartTask(index) => {
                 if let Ok(mut tasks) = self.tasks.lock()
@@ -986,8 +943,7 @@ fn main() {
     // 初始化 tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "time_ticker=debug,info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "time_ticker=debug,info".into()),
         )
         .with_target(false)
         .with_thread_ids(false)
@@ -1028,9 +984,7 @@ fn main() {
 
 fn load_icon(path: &std::path::Path) -> tray_icon::Icon {
     let (icon_rgba, icon_width, icon_height) = {
-        let image = image::open(path)
-            .expect("Failed to open icon path")
-            .into_rgba8();
+        let image = image::open(path).expect("Failed to open icon path").into_rgba8();
         let (width, height) = image.dimensions();
         let rgba = image.into_raw();
         (rgba, width, height)

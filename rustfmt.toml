@@ -1,0 +1,23 @@
+# ========== use 语句整理配置 ==========
+# 合并相同路径的 use 语句
+imports_granularity = "Crate"  # 选项: Crate|Module|Item|One (推荐 Module)
+
+# 按字母顺序排序 use 语句
+reorder_imports = true
+
+
+# ========== 其他常用格式化配置 ==========
+# 最大行宽
+max_width = 100
+
+# 缩进风格
+tab_spaces = 4
+
+# 链式调用换行风格
+chain_width = 60
+
+# 函数参数换行风格
+fn_params_layout = "Compressed"
+
+# 结构体字段对齐
+struct_field_align_threshold = 20

@@ -5,20 +5,22 @@ mod task;
 
 use image::{ImageBuffer, Rgba, RgbaImage};
 use parser::parse_time_input;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
+};
 use task::{Task, TaskType};
 use tracing::{debug, error, info, trace, warn};
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconEventReceiver,
     menu::{Menu, MenuEvent as TrayMenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
 };
-use winit::window::Window;
 use winit::{
     application::ApplicationHandler,
     event::Event,
     event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
+    window::Window,
 };
 
 #[derive(Debug)]
@@ -33,13 +35,13 @@ enum UserEvent {
 }
 
 struct Application {
-    tray_icon: Option<TrayIcon>,
-    tasks: Arc<Mutex<Vec<Task>>>,
-    menu_ids: HashMap<MenuId, String>,       // 菜单ID到动作的映射
-    menu_items: HashMap<usize, Submenu>,     // 任务索引到子菜单的映射，用于更新文本
-    control_items: HashMap<usize, MenuItem>, // 任务索引到控制按钮的映射
-    pinned_tray_icons: HashMap<usize, TrayIcon>, // 固定任务的独立托盘图标
-    pinned_menu_items: HashMap<usize, MenuItem>, // 固定托盘菜单中的时间显示项
+    tray_icon:            Option<TrayIcon>,
+    tasks:                Arc<Mutex<Vec<Task>>>,
+    menu_ids:             HashMap<MenuId, String>, // 菜单ID到动作的映射
+    menu_items:           HashMap<usize, Submenu>, // 任务索引到子菜单的映射，用于更新文本
+    control_items:        HashMap<usize, MenuItem>, // 任务索引到控制按钮的映射
+    pinned_tray_icons:    HashMap<usize, TrayIcon>, // 固定任务的独立托盘图标
+    pinned_menu_items:    HashMap<usize, MenuItem>, // 固定托盘菜单中的时间显示项
     pinned_control_items: HashMap<usize, MenuItem>, // 固定托盘菜单中的控制按钮
 }
 
@@ -61,13 +63,13 @@ impl Application {
         ));
 
         Application {
-            tray_icon: None,
-            tasks: Arc::new(Mutex::new(test_tasks)),
-            menu_ids: HashMap::new(),
-            menu_items: HashMap::new(),
-            control_items: HashMap::new(),
-            pinned_tray_icons: HashMap::new(),
-            pinned_menu_items: HashMap::new(),
+            tray_icon:            None,
+            tasks:                Arc::new(Mutex::new(test_tasks)),
+            menu_ids:             HashMap::new(),
+            menu_items:           HashMap::new(),
+            control_items:        HashMap::new(),
+            pinned_tray_icons:    HashMap::new(),
+            pinned_menu_items:    HashMap::new(),
             pinned_control_items: HashMap::new(),
         }
     }
@@ -303,11 +305,7 @@ impl Application {
     }
 
     fn build_pinned_task_menu(
-        &mut self,
-        task_index: usize,
-        task_name: &str,
-        task_type: &TaskType,
-        is_running: bool,
+        &mut self, task_index: usize, task_name: &str, task_type: &TaskType, is_running: bool,
         remaining_time: Duration,
     ) -> Menu {
         let menu = Menu::new();
@@ -584,12 +582,7 @@ impl Application {
     }
 
     fn draw_pattern(
-        &self,
-        img: &mut RgbaImage,
-        x: u32,
-        y: u32,
-        pattern: &[[u8; 3]; 5],
-        color: Rgba<u8>,
+        &self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 3]; 5], color: Rgba<u8>,
     ) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
@@ -606,12 +599,7 @@ impl Application {
 
     // 大字体绘制方法 (5x7 像素)
     fn draw_large_pattern(
-        &self,
-        img: &mut RgbaImage,
-        x: u32,
-        y: u32,
-        pattern: &[[u8; 5]; 7],
-        color: Rgba<u8>,
+        &self, img: &mut RgbaImage, x: u32, y: u32, pattern: &[[u8; 5]; 7], color: Rgba<u8>,
     ) {
         for (row, line) in pattern.iter().enumerate() {
             for (col, &pixel) in line.iter().enumerate() {
@@ -928,16 +916,13 @@ impl ApplicationHandler<UserEvent> for Application {
     }
 
     fn window_event(
-        &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        _event: winit::event::WindowEvent,
+        &mut self, _event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId, _event: winit::event::WindowEvent,
     ) {
     }
 
     fn new_events(
-        &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
+        &mut self, _event_loop: &winit::event_loop::ActiveEventLoop,
         cause: winit::event::StartCause,
     ) {
         if winit::event::StartCause::Init == cause {

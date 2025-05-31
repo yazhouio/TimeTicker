@@ -1,8 +1,8 @@
-use std::time::{Duration, SystemTime};
+use crate::task::TaskType;
 use chrono::{Local, NaiveTime};
 use regex::Regex;
 use snafu::{ResultExt, Snafu};
-use crate::task::TaskType;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Snafu)]
 pub enum ParseError {
@@ -14,9 +14,11 @@ pub enum ParseError {
 
 pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
     let re = Regex::new(r"^(.*?)(?:#(.+))?$").unwrap();
-    let caps = re.captures(input).ok_or_else(|| ParseError::InvalidFormat {
-        msg: "Invalid input format".to_string(),
-    })?;
+    let caps = re
+        .captures(input)
+        .ok_or_else(|| ParseError::InvalidFormat {
+            msg: "Invalid input format".to_string(),
+        })?;
 
     let time_str = caps.get(1).unwrap().as_str().trim();
     let name = caps.get(2).map_or("未命名", |m| m.as_str()).to_string();
@@ -24,10 +26,11 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
     if time_str.starts_with('@') {
         // 处理截止时间格式 (@HH:MM)
         let time_str = &time_str[1..];
-        let time = NaiveTime::parse_from_str(time_str, "%H:%M")
-            .map_err(|_| ParseError::InvalidFormat {
+        let time = NaiveTime::parse_from_str(time_str, "%H:%M").map_err(|_| {
+            ParseError::InvalidFormat {
                 msg: "Invalid time format".to_string(),
-            })?;
+            }
+        })?;
 
         let now = Local::now();
         let mut deadline = now.date_naive().and_time(time);
@@ -35,7 +38,10 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
             deadline = deadline + chrono::Duration::days(1);
         }
 
-        Ok((name, TaskType::Deadline(deadline.and_local_timezone(Local).unwrap().into())))
+        Ok((
+            name,
+            TaskType::Deadline(deadline.and_local_timezone(Local).unwrap().into()),
+        ))
     } else {
         // 处理时间段格式 (1h30m)
         let mut duration = Duration::ZERO;
@@ -50,9 +56,11 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
             match unit {
                 "h" => duration += Duration::from_secs(value * 3600),
                 "m" => duration += Duration::from_secs(value * 60),
-                _ => return Err(ParseError::InvalidDuration {
-                    msg: "Invalid time unit".to_string(),
-                }),
+                _ => {
+                    return Err(ParseError::InvalidDuration {
+                        msg: "Invalid time unit".to_string(),
+                    });
+                }
             }
         }
 
@@ -64,4 +72,4 @@ pub fn parse_time_input(input: &str) -> Result<(String, TaskType), ParseError> {
 
         Ok((name, TaskType::Duration(duration)))
     }
-} 
+}

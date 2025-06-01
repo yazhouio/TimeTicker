@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+mod error;
 mod parser;
 mod task;
 
@@ -11,7 +12,15 @@ use std::{
 };
 
 use image::{ImageBuffer, Rgba, RgbaImage};
+#[cfg(target_os = "macos")]
+use objc2::{ClassType, msg_send_id};
+// macOS 特定导入，用于 Dock 控制
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSImage};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{MainThreadMarker, NSData, NSString};
 use parser::parse_time_input;
+use snafu::{Backtrace, ResultExt, prelude::*};
 use task::{Task, TaskType};
 use tracing::{debug, error, info, trace, warn};
 use tray_icon::{
@@ -25,13 +34,13 @@ use winit::{
     window::Window,
 };
 
-// macOS 特定导入，用于 Dock 控制
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSImage};
-#[cfg(target_os = "macos")]
-use objc2_foundation::{NSString, NSData, MainThreadMarker};
-#[cfg(target_os = "macos")]
-use objc2::{msg_send_id, ClassType};
+use crate::error::{
+    CanonicalizePathSnafu, Error, EventLoopCreationSnafu, EventLoopSendSnafu, IconConversionSnafu, ImageSnafu,
+    InvalidActionFormatSnafu, IoSnafu, MacOsMainRunLoopUnavailableSnafu, MainThreadMarkerSnafu, MenuAppendSnafu,
+    ParseActionIndexSnafu, /* ParserErrorWrapperSnafu was correctly removed. SystemTimeSnafu was correctly changed
+                            * to SystemTimeErrorSnafu. */
+    Result, TaskLockSnafu, TrayIconBuildSnafu, TrayIconUpdateSnafu, WindowCreationSnafu,
+};
 
 #[derive(Debug)]
 enum UserEvent {
@@ -58,33 +67,34 @@ struct Application {
 impl Application {
     fn new() -> Self {
         // 创建一些测试任务
-        let mut test_tasks = vec![
-            // 添加一个1小时的截止时间任务（暂停状态）
+        let test_tasks_results = vec![
             Task::new(
-                "工作".to_string(),
+                "工作1".to_string(),
                 TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
             ),
-            // 添加一个30分钟的番茄钟任务（暂停状态）
-            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
-              Task::new(
-                "工作".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            Task::new("学习1".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
+            Task::new(
+                "工作2".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(7200)),
             ),
-            // 添加一个30分钟的番茄钟任务（暂停状态）
-            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
-              Task::new(
-                "工作".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            Task::new("学习2".to_string(), TaskType::Duration(Duration::from_secs(15 * 60))),
+            Task::new(
+                "工作3".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(10800)),
             ),
-            // 添加一个30分钟的番茄钟任务（暂停状态）
-            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
-              Task::new(
-                "工作".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
-            ),
-            // 添加一个30分钟的番茄钟任务（暂停状态）
-            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
+            Task::new("学习3".to_string(), TaskType::Duration(Duration::from_secs(45 * 60))),
         ];
+
+        let test_tasks: Vec<Task> = test_tasks_results
+            .into_iter()
+            .filter_map(|task_result| match task_result {
+                Ok(task) => Some(task),
+                Err(e) => {
+                    error!("Failed to create initial task: {}", e);
+                    None
+                }
+            })
+            .collect();
 
         Self {
             tray_icon: None,
@@ -98,21 +108,21 @@ impl Application {
         }
     }
 
-    fn new_tray_icon(&mut self) -> TrayIcon {
-        let path = "./assets/logo.png";
-        let icon = load_icon(std::path::Path::new(path));
+    fn new_tray_icon(&mut self) -> Result<TrayIcon> {
+        let path = std::path::Path::new("./assets/logo.png");
+        let icon = load_icon(path)?;
 
-        let menu = self.build_menu();
+        let menu = self.build_menu()?;
 
         TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("Time Ticker")
             .with_icon(icon)
             .build()
-            .unwrap()
+            .context(TrayIconBuildSnafu)
     }
 
-    fn build_menu(&mut self) -> Menu {
+    fn build_menu(&mut self) -> Result<Menu> {
         let menu = Menu::new();
 
         // 保存固定托盘菜单的ID，避免被清除
@@ -134,10 +144,11 @@ impl Application {
 
         // 添加任务菜单项
         {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock().map_err(|_| error::TaskLockSnafu.build())?;
             for (i, task) in tasks.iter().enumerate() {
                 // 显示剩余时间的子菜单
-                let time_str = format_remaining_time(task.get_remaining_time());
+                let remaining_time = task.get_remaining_time()?;
+                let time_str = format_remaining_time(remaining_time);
                 let task_submenu = Submenu::new(format!("{}#{}", time_str, task.name), true);
                 self.menu_items.insert(i, task_submenu.clone()); // 存储子菜单引用
 
@@ -149,13 +160,17 @@ impl Application {
                         let start_pause_id = start_pause.id().clone();
                         self.menu_ids.insert(start_pause_id, format!("toggle_{i}"));
                         self.control_items.insert(i, start_pause.clone()); // 存储控制项引用
-                        task_submenu.append(&start_pause).unwrap();
+                        task_submenu.append(&start_pause).context(MenuAppendSnafu {
+                            item_name: format!("start_pause_task_{}", i),
+                        })?;
 
                         // 重置
                         let reset = MenuItem::new("重置", true, None);
                         let reset_id = reset.id().clone();
                         self.menu_ids.insert(reset_id, format!("reset_{i}"));
-                        task_submenu.append(&reset).unwrap();
+                        task_submenu.append(&reset).context(MenuAppendSnafu {
+                            item_name: format!("reset_task_{}", i),
+                        })?;
                     }
                     TaskType::Deadline(_) => {
                         // 截止时间类型任务不需要开始/暂停/重置
@@ -163,45 +178,63 @@ impl Application {
                 }
 
                 // 添加分隔线
-                task_submenu.append(&PredefinedMenuItem::separator()).unwrap();
+                task_submenu
+                    .append(&PredefinedMenuItem::separator())
+                    .context(MenuAppendSnafu {
+                        item_name: format!("separator_after_controls_task_{}", i),
+                    })?;
 
                 // 新增任务
-                let new_task = MenuItem::new("新增", true, None);
-                let new_task_id = new_task.id().clone();
+                let new_task_item = MenuItem::new("新增", true, None);
+                let new_task_id = new_task_item.id().clone();
                 self.menu_ids.insert(new_task_id, "new_task".to_string());
-                task_submenu.append(&new_task).unwrap();
+                task_submenu.append(&new_task_item).context(MenuAppendSnafu {
+                    item_name: format!("new_sub_task_{}", i),
+                })?;
 
                 // 编辑
                 let edit = MenuItem::new("编辑", true, None);
                 let edit_id = edit.id().clone();
                 self.menu_ids.insert(edit_id, format!("edit_{i}"));
-                task_submenu.append(&edit).unwrap();
+                task_submenu.append(&edit).context(MenuAppendSnafu {
+                    item_name: format!("edit_task_{}", i),
+                })?;
 
                 // 删除
                 let delete = MenuItem::new("删除", true, None);
                 let delete_id = delete.id().clone();
                 self.menu_ids.insert(delete_id, format!("delete_{i}"));
-                task_submenu.append(&delete).unwrap();
+                task_submenu.append(&delete).context(MenuAppendSnafu {
+                    item_name: format!("delete_task_{}", i),
+                })?;
 
                 // 固定/取消固定
                 let pin = MenuItem::new(if task.pinned { "取消固定" } else { "固定" }, true, None);
                 let pin_id = pin.id().clone();
                 self.menu_ids.insert(pin_id, format!("pin_{i}"));
-                task_submenu.append(&pin).unwrap();
+                task_submenu.append(&pin).context(MenuAppendSnafu {
+                    item_name: format!("pin_task_{}", i),
+                })?;
 
                 // 将子菜单添加到主菜单
-                menu.append(&task_submenu).unwrap();
+                menu.append(&task_submenu).context(MenuAppendSnafu {
+                    item_name: format!("task_submenu_{}", i),
+                })?;
             }
         }
 
         // 添加分隔线
-        menu.append(&PredefinedMenuItem::separator()).unwrap();
+        menu.append(&PredefinedMenuItem::separator()).context(MenuAppendSnafu {
+            item_name: "separator_after_tasks".to_string(),
+        })?;
 
         // 添加新建任务选项
-        let new_task = MenuItem::new("新建任务", true, None);
-        let new_task_id = new_task.id().clone();
-        self.menu_ids.insert(new_task_id, "new_task".to_string());
-        menu.append(&new_task).unwrap();
+        let new_task_main = MenuItem::new("新建任务", true, None);
+        let new_task_main_id = new_task_main.id().clone();
+        self.menu_ids.insert(new_task_main_id, "new_task".to_string());
+        menu.append(&new_task_main).context(MenuAppendSnafu {
+            item_name: "new_task_main".to_string(),
+        })?;
 
         // 添加设置选项
         let settings_submenu = Submenu::new("⚙️ 设置", true);
@@ -212,45 +245,63 @@ impl Application {
         let show_dock = MenuItem::new("显示在 Dock 中", true, None);
         let show_dock_id = show_dock.id().clone();
         self.menu_ids.insert(show_dock_id, "dock_show".to_string());
-        dock_submenu.append(&show_dock).unwrap();
+        dock_submenu.append(&show_dock).context(MenuAppendSnafu {
+            item_name: "dock_show".to_string(),
+        })?;
 
         let hide_dock = MenuItem::new("隐藏 Dock 图标", true, None);
         let hide_dock_id = hide_dock.id().clone();
         self.menu_ids.insert(hide_dock_id, "dock_hide".to_string());
-        dock_submenu.append(&hide_dock).unwrap();
+        dock_submenu.append(&hide_dock).context(MenuAppendSnafu {
+            item_name: "dock_hide".to_string(),
+        })?;
 
         // 添加分隔线
-        dock_submenu.append(&PredefinedMenuItem::separator()).unwrap();
+        dock_submenu
+            .append(&PredefinedMenuItem::separator())
+            .context(MenuAppendSnafu {
+                item_name: "dock_separator".to_string(),
+            })?;
 
         // 添加测试图标设置
         let test_icon = MenuItem::new("🔄 重新设置 dock.png", true, None);
         let test_icon_id = test_icon.id().clone();
         self.menu_ids.insert(test_icon_id, "dock_test_icon".to_string());
-        dock_submenu.append(&test_icon).unwrap();
+        dock_submenu.append(&test_icon).context(MenuAppendSnafu {
+            item_name: "dock_test_icon".to_string(),
+        })?;
 
-        settings_submenu.append(&dock_submenu).unwrap();
-        menu.append(&settings_submenu).unwrap();
+        settings_submenu.append(&dock_submenu).context(MenuAppendSnafu {
+            item_name: "dock_submenu".to_string(),
+        })?;
+        menu.append(&settings_submenu).context(MenuAppendSnafu {
+            item_name: "settings_submenu".to_string(),
+        })?;
 
         // 添加分隔线
-        menu.append(&PredefinedMenuItem::separator()).unwrap();
+        menu.append(&PredefinedMenuItem::separator()).context(MenuAppendSnafu {
+            item_name: "separator_before_quit".to_string(),
+        })?;
 
         // 添加退出选项
         let quit = MenuItem::new("退出", true, None);
         let quit_id = quit.id().clone();
         self.menu_ids.insert(quit_id, "quit".to_string());
-        menu.append(&quit).unwrap();
+        menu.append(&quit).context(MenuAppendSnafu {
+            item_name: "quit".to_string(),
+        })?;
 
-        menu
+        Ok(menu)
     }
 
-    fn update_tray_icon(&self) {
+    fn update_tray_icon(&self) -> Result<()> {
         if let Some(tray_icon) = &self.tray_icon {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock().map_err(|_| TaskLockSnafu.build())?; // Use TaskLockSnafu directly
             let mut tooltip = String::new();
 
             // 更新tooltip和菜单项文本
             for (i, task) in tasks.iter().enumerate() {
-                let remaining = task.get_remaining_time();
+                let remaining = task.get_remaining_time()?;
                 let time_str = format_remaining_time(remaining);
                 tooltip.push_str(&format!("{}#{}\n", time_str, task.name));
 
@@ -267,31 +318,37 @@ impl Application {
                 }
             }
 
-            tray_icon.set_tooltip(Some(&tooltip)).unwrap();
+            tray_icon.set_tooltip(Some(&tooltip)).context(TrayIconUpdateSnafu {
+                operation: "set_tooltip".to_string(),
+            })?;
             drop(tasks);
         }
 
         // 更新所有固定的托盘图标
         let pinned_indices: Vec<usize> = self.pinned_tray_icons.keys().cloned().collect();
         for index in pinned_indices {
-            self.update_pinned_tray_icon(index);
+            if let Err(e) = self.update_pinned_tray_icon(index) {
+                error!("Failed to update pinned tray icon for task {}: {}", index, e);
+            }
         }
+        Ok(())
     }
 
-    fn refresh_menu(&mut self) {
-        let new_menu = self.build_menu();
+    fn refresh_menu(&mut self) -> Result<()> {
+        let new_menu = self.build_menu()?;
         if let Some(tray_icon) = &self.tray_icon {
-            tray_icon.set_menu(Some(Box::new(new_menu)));
+            tray_icon.set_menu(Some(Box::new(new_menu))); // Use TrayIconUpdateSnafu directly
         }
+        Ok(())
     }
 
-    fn create_pinned_tray_icon(&mut self, task_index: usize) {
-        let path = "./assets/logo.png";
-        let icon = load_icon(std::path::Path::new(path));
+    fn create_pinned_tray_icon(&mut self, task_index: usize) -> Result<()> {
+        let path = std::path::Path::new("./assets/logo.png");
+        let icon_res = load_icon(path); // Keep as Result for now
 
         // 先获取任务信息，然后释放锁
-        let (task_name, task_type, is_running, remaining_time) = {
-            let tasks = self.tasks.lock().unwrap();
+        let (task_name, task_type, is_running, remaining_time_res) = {
+            let tasks = self.tasks.lock().map_err(|_| error::TaskLockSnafu.build())?;
             if let Some(task) = tasks.get(task_index) {
                 (
                     task.name.clone(),
@@ -300,15 +357,19 @@ impl Application {
                     task.get_remaining_time(),
                 )
             } else {
-                return;
+                // This case should ideally be an error, but to match original logic, we return
+                // Ok. Consider changing to `Err(Error::TaskNotFound { index:
+                // task_index, ... })`
+                return Ok(());
             }
         };
+        let remaining_time = remaining_time_res?; // Handle Result for remaining_time
 
         // 现在可以安全地调用 build_pinned_task_menu
-        let menu = self.build_pinned_task_menu(task_index, &task_name, &task_type, is_running, remaining_time);
+        let menu = self.build_pinned_task_menu(task_index, &task_name, &task_type, is_running, remaining_time)?;
 
         // 使用时间文本作为标题，格式：MM:SS
-        let time_str = format_remaining_time(remaining_time);
+        let time_str = format_remaining_time(remaining_time); // remaining_time is already Duration here
         let parts: Vec<&str> = time_str.split(':').collect();
         let time_title = if parts.len() >= 3 {
             format!("{}:{}", parts[1], parts[2]) // 显示 MM:SS
@@ -316,15 +377,18 @@ impl Application {
             "00:00".to_string()
         };
 
+        let final_icon = icon_res?; // Handle icon Result here
+
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(format!("{}#{}", format_remaining_time(remaining_time), task_name))
-            .with_icon(icon)
+            .with_tooltip(format!("{}#{}", format_remaining_time(remaining_time), task_name)) // remaining_time is Duration
+            .with_icon(final_icon)
             .with_title(&time_title)
             .build()
-            .unwrap();
+            .context(TrayIconBuildSnafu)?; // Use TrayIconBuildSnafu directly
 
         self.pinned_tray_icons.insert(task_index, tray_icon);
+        Ok(())
     }
 
     fn build_pinned_task_menu(
@@ -334,17 +398,21 @@ impl Application {
         task_type: &TaskType,
         is_running: bool,
         remaining_time: Duration,
-    ) -> Menu {
+    ) -> Result<Menu> {
         let menu = Menu::new();
 
         // 显示任务时间（正确显示当前剩余时间）
         let time_str = format_remaining_time(remaining_time);
         let time_item = MenuItem::new(format!("{time_str}#{task_name}"), false, None);
         self.pinned_menu_items.insert(task_index, time_item.clone()); // 保存引用以便更新
-        menu.append(&time_item).unwrap();
+        menu.append(&time_item).context(MenuAppendSnafu {
+            item_name: format!("pinned_time_item_task_{}", task_index),
+        })?;
 
         // 添加分隔线
-        menu.append(&PredefinedMenuItem::separator()).unwrap();
+        menu.append(&PredefinedMenuItem::separator()).context(MenuAppendSnafu {
+            item_name: format!("pinned_separator1_task_{}", task_index),
+        })?;
 
         // 根据任务类型添加控制选项
         match task_type {
@@ -355,13 +423,17 @@ impl Application {
                 self.menu_ids
                     .insert(start_pause_id, format!("pinned_toggle_{task_index}"));
                 self.pinned_control_items.insert(task_index, start_pause.clone()); // 保存引用以便更新
-                menu.append(&start_pause).unwrap();
+                menu.append(&start_pause).context(MenuAppendSnafu {
+                    item_name: format!("pinned_toggle_task_{}", task_index),
+                })?;
 
                 // 重置
                 let reset = MenuItem::new("重置", true, None);
                 let reset_id = reset.id().clone();
                 self.menu_ids.insert(reset_id, format!("pinned_reset_{task_index}"));
-                menu.append(&reset).unwrap();
+                menu.append(&reset).context(MenuAppendSnafu {
+                    item_name: format!("pinned_reset_task_{}", task_index),
+                })?;
             }
             TaskType::Deadline(_) => {
                 // 截止时间类型任务不需要开始/暂停/重置
@@ -369,15 +441,19 @@ impl Application {
         }
 
         // 添加分隔线
-        menu.append(&PredefinedMenuItem::separator()).unwrap();
+        menu.append(&PredefinedMenuItem::separator()).context(MenuAppendSnafu {
+            item_name: format!("pinned_separator2_task_{}", task_index),
+        })?;
 
         // 取消固定
         let unpin = MenuItem::new("取消固定", true, None);
         let unpin_id = unpin.id().clone();
         self.menu_ids.insert(unpin_id, format!("unpin_{task_index}"));
-        menu.append(&unpin).unwrap();
+        menu.append(&unpin).context(MenuAppendSnafu {
+            item_name: format!("unpin_task_{}", task_index),
+        })?;
 
-        menu
+        Ok(menu)
     }
 
     fn remove_pinned_tray_icon(&mut self, task_index: usize) {
@@ -386,28 +462,27 @@ impl Application {
         self.pinned_control_items.remove(&task_index);
     }
 
-    fn update_pinned_tray_icon(&self, task_index: usize) {
+    fn update_pinned_tray_icon(&self, task_index: usize) -> Result<()> {
         // 先获取任务信息
         let (task_name, task_type, is_running, remaining_time) = {
-            if let Ok(tasks) = self.tasks.lock() {
-                if let Some(task) = tasks.get(task_index) {
-                    (
-                        task.name.clone(),
-                        task.task_type.clone(),
-                        task.is_running,
-                        task.get_remaining_time(),
-                    )
-                } else {
-                    return;
-                }
+            let tasks = self.tasks.lock().map_err(|_| error::TaskLockSnafu.build())?;
+            if let Some(task) = tasks.get(task_index) {
+                (
+                    task.name.clone(),
+                    task.task_type.clone(),
+                    task.is_running,
+                    task.get_remaining_time(),
+                )
             } else {
-                return;
+                // Consider returning an error here if task not found
+                return Ok(()); // Matching original behavior
             }
         };
+        let remaining_time = remaining_time?; // Handle Result from get_remaining_time
 
         // 更新托盘图标
         if let Some(tray_icon) = self.pinned_tray_icons.get(&task_index) {
-            let time_str = format_remaining_time(remaining_time);
+            let time_str = format_remaining_time(remaining_time); // Handle Result from get_remaining_time
             let tooltip = format!("{time_str}#{task_name}");
 
             // 使用文本标题显示时间，格式：MM:SS
@@ -419,12 +494,14 @@ impl Application {
             };
 
             tray_icon.set_title(Some(&time_title));
-            tray_icon.set_tooltip(Some(&tooltip));
+            tray_icon.set_tooltip(Some(&tooltip)).context(TrayIconUpdateSnafu {
+                operation: format!("set_tooltip_pinned_task_{}", task_index),
+            })?;
         }
 
         // 更新固定菜单中的时间显示项（不重新构建菜单，避免菜单消失）
         if let Some(menu_item) = self.pinned_menu_items.get(&task_index) {
-            let time_str = format_remaining_time(remaining_time);
+            let time_str = format_remaining_time(remaining_time); // Handle Result from get_remaining_time
             menu_item.set_text(format!("{time_str}#{task_name}"));
         }
 
@@ -434,14 +511,15 @@ impl Application {
         {
             control_item.set_text(if is_running { "暂停" } else { "开始" });
         }
+        Ok(())
     }
 
-    fn create_time_icon(&self, time_str: &str) -> Icon {
+    fn create_time_icon(&self, time_str: &str) -> Result<Icon> {
         // 直接使用简化版本，绘制数字时间
         self.create_digital_time_icon(time_str)
     }
 
-    fn create_digital_time_icon(&self, time_str: &str) -> Icon {
+    fn create_digital_time_icon(&self, time_str: &str) -> Result<Icon> {
         // 创建一个32x32的图像
         let width = 32u32;
         let height = 32u32;
@@ -468,7 +546,7 @@ impl Application {
 
         // 转换为Icon
         let rgba_data = img.into_raw();
-        Icon::from_rgba(rgba_data, width, height).unwrap()
+        Icon::from_rgba(rgba_data, width, height).context(IconConversionSnafu) // Use IconConversionSnafu directly
     }
 
     fn draw_large_text(&self, img: &mut RgbaImage, text: &str, x: u32, y: u32) {
@@ -782,14 +860,50 @@ impl Application {
                 std::process::exit(0);
             } else if action == "dock_show" {
                 info!("🖥️ 显示 Dock 图标");
-                set_dock_visibility(true);
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(e) = set_dock_visibility(true) {
+                        error!("Failed to show dock: {}", e);
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    // For non-macOS, set_dock_visibility itself will warn.
+                    // We can call it to maintain consistent behavior if it has non-macOS logic,
+                    // or just warn here if it's purely a no-op that returns Ok(()).
+                    if let Err(e) = set_dock_visibility(true) {
+                        // Assuming it might do something or log
+                        error!("set_dock_visibility(true) failed on non-macOS (unexpected): {}", e);
+                    }
+                    warn!("Dock visibility control is primarily a macOS feature.");
+                }
             } else if action == "dock_hide" {
                 info!("🖥️ 隐藏 Dock 图标");
-                set_dock_visibility(false);
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(e) = set_dock_visibility(false) {
+                        error!("Failed to hide dock: {}", e);
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    if let Err(e) = set_dock_visibility(false) {
+                        error!("set_dock_visibility(false) failed on non-macOS (unexpected): {}", e);
+                    }
+                    warn!("Dock visibility control is primarily a macOS feature.");
+                }
             } else if action == "dock_test_icon" {
                 info!("🔄 手动重新设置 Dock 图标");
                 #[cfg(target_os = "macos")]
-                set_dock_icon();
+                {
+                    if let Err(e) = set_dock_icon() {
+                        error!("Failed to set dock icon: {}", e);
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    warn!("Dock icon control is only available on macOS.");
+                }
             } else if action == "new_task" {
                 // 实现新建任务功能
                 self.handle_new_task();
@@ -797,127 +911,280 @@ impl Application {
                 // 处理任务点击
                 println!("点击了任务");
             } else if action.starts_with("toggle_") {
-                // 处理开始/暂停
-                if let Ok(index) = action.strip_prefix("toggle_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock()
-                        && let Some(task) = tasks.get_mut(index)
-                    {
-                        if task.is_running {
-                            task.pause();
-                            info!("⏸️ 任务 '{}' 已暂停", task.name);
+                match action
+                    .strip_prefix("toggle_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "toggle_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                            if let Some(task) = tasks.get_mut(index) {
+                                if task.is_running {
+                                    if let Err(e) = task.pause() {
+                                        error!("Failed to pause task {}: {}", task.name, e);
+                                    } else {
+                                        info!("⏸️ 任务 '{}' 已暂停", task.name);
+                                    }
+                                } else {
+                                    task.start();
+                                    info!("▶️ 任务 '{}' 已开始", task.name);
+                                }
+                            } else {
+                                error!("Task not found at index {} for toggle", index);
+                            }
                         } else {
-                            task.start();
-                            info!("▶️ 任务 '{}' 已开始", task.name);
+                            error!("Failed to lock tasks for toggle");
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after toggle: {}", e);
                         }
                     }
-                    self.refresh_menu(); // 刷新菜单以更新按钮文本
+                    Err(e) => error!("Failed to process toggle action '{}': {}", action, e),
                 }
             } else if action.starts_with("reset_") {
-                // 处理重置
-                if let Ok(index) = action.strip_prefix("reset_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock()
-                        && let Some(task) = tasks.get_mut(index)
-                    {
-                        task.reset();
-                        info!("🔄 任务 '{}' 已重置", task.name);
+                match action
+                    .strip_prefix("reset_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "reset_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                            if let Some(task) = tasks.get_mut(index) {
+                                if let Err(e) = task.reset() {
+                                    error!("Failed to reset task {}: {}", task.name, e);
+                                } else {
+                                    info!("🔄 任务 '{}' 已重置", task.name);
+                                }
+                            } else {
+                                error!("Task not found at index {} for reset", index);
+                            }
+                        } else {
+                            error!("Failed to lock tasks for reset");
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after reset: {}", e);
+                        }
                     }
-                    self.refresh_menu(); // 刷新菜单以更新状态
+                    Err(e) => error!("Failed to process reset action '{}': {}", action, e),
                 }
             } else if action.starts_with("edit_") {
-                // 处理编辑
                 warn!("✏️ 编辑功能待实现");
             } else if action.starts_with("delete_") {
-                // 处理删除
-                if let Ok(index) = action.strip_prefix("delete_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock()
-                        && index < tasks.len()
-                    {
-                        let task_name = tasks[index].name.clone();
-                        tasks.remove(index);
-                        warn!("🗑️ 任务 '{}' 已删除", task_name);
+                match action
+                    .strip_prefix("delete_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "delete_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                            if index < tasks.len() {
+                                let task_name = tasks.remove(index).name;
+                                warn!("🗑️ 任务 '{}' 已删除", task_name);
+                            } else {
+                                error!("Task index {} out of bounds for delete", index);
+                            }
+                        } else {
+                            error!("Failed to lock tasks for delete");
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after delete: {}", e);
+                        }
                     }
-                    self.refresh_menu(); // 刷新菜单以移除已删除的任务
+                    Err(e) => error!("Failed to process delete action '{}': {}", action, e),
                 }
             } else if action.starts_with("pin_") {
-                // 处理固定/取消固定
-                if let Ok(index) = action.strip_prefix("pin_").unwrap().parse::<usize>() {
-                    let (task_name, is_pinned) = {
-                        if let Ok(mut tasks) = self.tasks.lock() {
+                match action
+                    .strip_prefix("pin_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "pin_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        let mut task_name_opt = None;
+                        let mut is_pinned_opt = None;
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
                             if let Some(task) = tasks.get_mut(index) {
                                 task.pinned = !task.pinned;
-                                (task.name.clone(), task.pinned)
+                                task_name_opt = Some(task.name.clone());
+                                is_pinned_opt = Some(task.pinned);
                             } else {
-                                return;
+                                error!("Task not found at index {} for pin/unpin", index);
                             }
                         } else {
-                            return;
+                            error!("Failed to lock tasks for pin/unpin");
                         }
-                    };
 
-                    if is_pinned {
-                        // 创建独立的托盘图标
-                        self.create_pinned_tray_icon(index);
-                        info!("📌 任务 '{}' 已固定，创建了独立托盘图标", task_name);
-                    } else {
-                        // 移除独立的托盘图标
-                        self.remove_pinned_tray_icon(index);
-                        info!("📌 任务 '{}' 已取消固定，移除了独立托盘图标", task_name);
+                        if let (Some(task_name), Some(is_pinned)) = (task_name_opt, is_pinned_opt) {
+                            if is_pinned {
+                                if let Err(e) = self.create_pinned_tray_icon(index) {
+                                    error!("Failed to create pinned tray icon for task '{}': {}", task_name, e);
+                                } else {
+                                    info!("📌 任务 '{}' 已固定", task_name);
+                                }
+                            } else {
+                                self.remove_pinned_tray_icon(index);
+                                info!("📌 任务 '{}' 已取消固定", task_name);
+                            }
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after pin/unpin: {}", e);
+                        }
                     }
-
-                    self.refresh_menu(); // 刷新菜单以更新固定状态
+                    Err(e) => error!("Failed to process pin action '{}': {}", action, e),
                 }
             } else if action.starts_with("unpin_") {
-                // 处理从固定托盘图标取消固定
-                if let Ok(index) = action.strip_prefix("unpin_").unwrap().parse::<usize>() {
-                    let task_name = {
-                        if let Ok(mut tasks) = self.tasks.lock() {
+                match action
+                    .strip_prefix("unpin_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "unpin_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        let mut task_name_opt = None;
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
                             if let Some(task) = tasks.get_mut(index) {
                                 task.pinned = false;
-                                task.name.clone()
+                                task_name_opt = Some(task.name.clone());
                             } else {
-                                return;
+                                error!("Task not found at index {} for unpin", index);
                             }
                         } else {
-                            return;
+                            error!("Failed to lock tasks for unpin");
                         }
-                    };
 
-                    // 移除独立的托盘图标
-                    self.remove_pinned_tray_icon(index);
-                    info!("📌 任务 '{}' 已取消固定，移除了独立托盘图标", task_name);
-
-                    self.refresh_menu(); // 刷新主菜单以更新固定状态
+                        if let Some(task_name) = task_name_opt {
+                            self.remove_pinned_tray_icon(index);
+                            info!("📌 任务 '{}' 已取消固定", task_name);
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after unpin: {}", e);
+                        }
+                    }
+                    Err(e) => error!("Failed to process unpin action '{}': {}", action, e),
                 }
             } else if action.starts_with("pinned_toggle_") {
-                // 处理固定托盘图标的开始/暂停
-                if let Ok(index) = action.strip_prefix("pinned_toggle_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock()
-                        && let Some(task) = tasks.get_mut(index)
-                    {
-                        if task.is_running {
-                            task.pause();
-                            info!("⏸️ 固定任务 '{}' 已暂停", task.name);
+                match action
+                    .strip_prefix("pinned_toggle_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "pinned_toggle_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                            if let Some(task) = tasks.get_mut(index) {
+                                if task.is_running {
+                                    if let Err(e) = task.pause() {
+                                        error!("Failed to pause pinned task {}: {}", task.name, e);
+                                    } else {
+                                        info!("⏸️ 固定任务 '{}' 已暂停", task.name);
+                                    }
+                                } else {
+                                    task.start();
+                                    info!("▶️ 固定任务 '{}' 已开始", task.name);
+                                }
+                            } else {
+                                error!("Pinned task not found at index {} for toggle", index);
+                            }
                         } else {
-                            task.start();
-                            info!("▶️ 固定任务 '{}' 已开始", task.name);
+                            error!("Failed to lock tasks for pinned_toggle");
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after pinned_toggle: {}", e);
+                        }
+                        if let Err(e) = self.update_pinned_tray_icon(index) {
+                            error!("Failed to update pinned tray icon after pinned_toggle: {}", e);
                         }
                     }
-                    // 刷新主菜单和固定托盘图标
-                    self.refresh_menu();
-                    self.update_pinned_tray_icon(index);
+                    Err(e) => error!("Failed to process pinned_toggle action '{}': {}", action, e),
                 }
             } else if action.starts_with("pinned_reset_") {
-                // 处理固定托盘图标的重置
-                if let Ok(index) = action.strip_prefix("pinned_reset_").unwrap().parse::<usize>() {
-                    if let Ok(mut tasks) = self.tasks.lock()
-                        && let Some(task) = tasks.get_mut(index)
-                    {
-                        task.reset();
-                        info!("🔄 固定任务 '{}' 已重置", task.name);
+                match action
+                    .strip_prefix("pinned_reset_")
+                    .ok_or_else(|| {
+                        InvalidActionFormatSnafu {
+                            action_string: action.clone(),
+                            expected_prefix: "pinned_reset_",
+                        }
+                        .build()
+                    })
+                    .and_then(|s| {
+                        s.parse::<usize>().context(ParseActionIndexSnafu {
+                            action_string: s.to_string(),
+                        })
+                    }) {
+                    Ok(index) => {
+                        if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                            if let Some(task) = tasks.get_mut(index) {
+                                if let Err(e) = task.reset() {
+                                    error!("Failed to reset pinned task {}: {}", task.name, e);
+                                } else {
+                                    info!("🔄 固定任务 '{}' 已重置", task.name);
+                                }
+                            } else {
+                                error!("Pinned task not found at index {} for reset", index);
+                            }
+                        } else {
+                            error!("Failed to lock tasks for pinned_reset");
+                        }
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after pinned_reset: {}", e);
+                        }
+                        if let Err(e) = self.update_pinned_tray_icon(index) {
+                            error!("Failed to update pinned tray icon after pinned_reset: {}", e);
+                        }
                     }
-                    // 刷新主菜单和固定托盘图标
-                    self.refresh_menu();
-                    self.update_pinned_tray_icon(index);
+                    Err(e) => error!("Failed to process pinned_reset action '{}': {}", action, e),
                 }
             }
         } else {
@@ -936,8 +1203,9 @@ impl Application {
         // 显示输入对话框
         let input = show_input_dialog(
             "新建任务",
-            "请输入任务信息：\n\n格式示例：\n• 时间段：1h30m#学习\n• 截止时间：@19:00#工作\n\n其中 # 后面是任务名称（可选）",
-            "1h#新任务"
+            "请输入任务信息：\n\n格式示例：\n• 时间段：1h30m#学习\n• 截止时间：@19:00#工作\n\n其中 # \
+             后面是任务名称（可选）",
+            "1h#新任务",
         );
 
         match input {
@@ -948,24 +1216,31 @@ impl Application {
                 match parse_time_input(&user_input) {
                     Ok((task_name, task_type)) => {
                         // 创建新任务
-                        let new_task = Task::new(task_name.clone(), task_type);
-
-                        // 添加到任务列表
-                        if let Ok(mut tasks) = self.tasks.lock() {
-                            tasks.push(new_task);
-                            info!("✅ 成功创建任务: {}", task_name);
-                        } else {
-                            error!("❌ 无法获取任务列表锁");
-                            return;
+                        match Task::new(task_name.clone(), task_type) {
+                            Ok(new_task_obj) => {
+                                // 添加到任务列表
+                                if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                                    // Use TaskLockSnafu directly
+                                    tasks.push(new_task_obj);
+                                    info!("✅ 成功创建任务: {}", task_name);
+                                } else {
+                                    error!("❌ 无法获取任务列表锁 (new task)");
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ 创建任务对象失败 (Task::new failed): {}", e);
+                            }
                         }
-
-                        // 刷新菜单以显示新任务
-                        self.refresh_menu();
-                        info!("🔄 菜单已刷新");
+                        // 刷新菜单
+                        if let Err(e) = self.refresh_menu() {
+                            error!("Failed to refresh menu after new task attempt: {}", e);
+                        } else {
+                            info!("🔄 菜单已刷新 (new task attempt)");
+                        }
                     }
                     Err(e) => {
+                        // This is for parse_time_input error
                         error!("❌ 解析任务输入失败: {}", e);
-
                         // 显示错误信息给用户
                         #[cfg(target_os = "macos")]
                         {
@@ -973,10 +1248,10 @@ impl Application {
                                 r#"display dialog "解析任务输入失败：\n\n{}\n\n请检查输入格式：\n• 时间段：1h30m#任务名\n• 截止时间：@19:00#任务名" with title "输入错误" buttons {{"确定"}} default button "确定" with icon stop"#,
                                 e
                             );
-                            let _ = Command::new("osascript")
-                                .arg("-e")
-                                .arg(&error_script)
-                                .output();
+                            match Command::new("osascript").arg("-e").arg(&error_script).output() {
+                                Ok(_) => info!("Error dialog displayed for parse failure."),
+                                Err(cmd_err) => error!("Failed to display error dialog via osascript: {}", cmd_err),
+                            }
                         }
                     }
                 }
@@ -990,7 +1265,17 @@ impl Application {
 
 impl ApplicationHandler<UserEvent> for Application {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes()).unwrap();
+        match event_loop.create_window(Window::default_attributes()) {
+            Ok(_window) => {
+                // Window created successfully
+            }
+            Err(e) => {
+                error!("Failed to create window in resumed: {}", Error::WindowCreation {
+                    source: e,
+                    backtrace: Backtrace::capture()
+                });
+            }
+        }
     }
 
     fn window_event(
@@ -1003,54 +1288,87 @@ impl ApplicationHandler<UserEvent> for Application {
 
     fn new_events(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, cause: winit::event::StartCause) {
         if winit::event::StartCause::Init == cause {
-            // Dock 图标已在 main 函数中预设置，这里只创建托盘图标
-            self.tray_icon = Some(self.new_tray_icon());
+            match self.new_tray_icon() {
+                Ok(tray_icon) => self.tray_icon = Some(tray_icon),
+                Err(e) => {
+                    error!("Failed to create initial tray icon: {}", e);
+                }
+            }
 
             #[cfg(target_os = "macos")]
             unsafe {
                 use objc2_core_foundation::CFRunLoop;
-                let rl = CFRunLoop::main().unwrap();
-                CFRunLoop::wake_up(&rl);
+                match CFRunLoop::main().context(MacOsMainRunLoopUnavailableSnafu) {
+                    // Use MacOsMainRunLoopUnavailableSnafu directly
+                    Ok(rl) => CFRunLoop::wake_up(&rl),
+                    Err(e) => error!("Failed to get main run loop in new_events: {}", e),
+                }
             }
         }
     }
 
     fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::TrayIconEvent(_) => {
-                // 处理托盘图标事件
-            }
+            UserEvent::TrayIconEvent(_) => {}
             UserEvent::MenuEvent(event) => {
                 self.handle_menu_event(event);
             }
             UserEvent::UpdateTimer => {
-                self.update_tray_icon(); // 现在使用set_text()更新，不会关闭菜单
+                if let Err(e) = self.update_tray_icon() {
+                    error!("Failed to update tray icon from timer: {}", e);
+                }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
             }
             UserEvent::StartTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock()
-                    && let Some(task) = tasks.get_mut(index)
-                {
-                    task.start();
+                if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                    // Use TaskLockSnafu directly
+                    if let Some(task) = tasks.get_mut(index) {
+                        task.start();
+                    } else {
+                        error!("Task not found at index {} for StartTask", index);
+                    }
+                } else {
+                    error!("Failed to lock tasks for StartTask");
                 }
             }
             UserEvent::PauseTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock()
-                    && let Some(task) = tasks.get_mut(index)
-                {
-                    task.pause();
+                if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                    // Use TaskLockSnafu directly
+                    if let Some(task) = tasks.get_mut(index) {
+                        if let Err(e) = task.pause() {
+                            error!("Failed to pause task {}: {}", task.name, e);
+                        }
+                    } else {
+                        error!("Task not found at index {} for PauseTask", index);
+                    }
+                } else {
+                    error!("Failed to lock tasks for PauseTask");
                 }
             }
             UserEvent::ResetTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock()
-                    && let Some(task) = tasks.get_mut(index)
-                {
-                    task.reset();
+                if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                    // Use TaskLockSnafu directly
+                    if let Some(task) = tasks.get_mut(index) {
+                        if let Err(e) = task.reset() {
+                            error!("Failed to reset task {}: {}", task.name, e);
+                        }
+                    } else {
+                        error!("Task not found at index {} for ResetTask", index);
+                    }
+                } else {
+                    error!("Failed to lock tasks for ResetTask");
                 }
             }
             UserEvent::DeleteTask(index) => {
-                if let Ok(mut tasks) = self.tasks.lock() {
-                    tasks.remove(index);
+                if let Ok(mut tasks) = self.tasks.lock().map_err(|_| TaskLockSnafu.build()) {
+                    // Use TaskLockSnafu directly
+                    if index < tasks.len() {
+                        tasks.remove(index);
+                    } else {
+                        error!("Task index {} out of bounds for DeleteTask", index);
+                    }
+                } else {
+                    error!("Failed to lock tasks for DeleteTask");
                 }
             }
         }
@@ -1065,8 +1383,6 @@ fn format_remaining_time(duration: Duration) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
-/// 显示输入对话框获取用户输入
-/// 返回 Some(input) 如果用户输入了内容，None 如果用户取消
 #[cfg(target_os = "macos")]
 fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<String> {
     let script = format!(
@@ -1074,16 +1390,12 @@ fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<S
         message, title, default_text
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output();
+    let output_res = Command::new("osascript").arg("-e").arg(&script).output();
 
-    match output {
-        Ok(result) => {
-            if result.status.success() {
-                let output_str = String::from_utf8_lossy(&result.stdout);
-                // AppleScript 返回格式: "button returned:确定, text returned:用户输入"
+    match output_res {
+        Ok(output) => {
+            if output.status.success() {
+                let output_str = String::from_utf8_lossy(&output.stdout);
                 if let Some(text_part) = output_str.split("text returned:").nth(1) {
                     let user_input = text_part.trim().to_string();
                     if !user_input.is_empty() {
@@ -1094,23 +1406,19 @@ fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<S
             None
         }
         Err(e) => {
-            error!("显示输入对话框失败: {}", e);
+            error!("显示输入对话框失败 (osascript execution): {}", e);
             None
         }
     }
 }
 
-/// 非 macOS 平台的输入对话框实现（简化版）
 #[cfg(not(target_os = "macos"))]
 fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<String> {
-    // 在非 macOS 平台，我们可以使用标准输入或其他方法
-    // 这里先返回一个默认值作为示例
-    warn!("输入对话框在此平台不支持，使用默认值");
+    warn!("输入对话框在此平台不支持，使用默认值: '{}'", default_text);
     Some(default_text.to_string())
 }
 
-fn main() {
-    // 初始化 tracing
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "time_ticker=debug,info".into()),
@@ -1123,133 +1431,133 @@ fn main() {
 
     info!("🚀 TimeTicker 应用程序启动");
 
-    // 在应用程序启动的最早阶段设置 Dock 图标，减少可见延迟
     #[cfg(target_os = "macos")]
     {
         info!("🔧 预设置 Dock 图标，减少启动延迟");
-        set_dock_visibility(true);
+        if let Err(e) = set_dock_visibility(true) {
+            error!("Failed to set initial dock visibility: {}", e);
+        }
     }
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .context(EventLoopCreationSnafu)?; // Use EventLoopCreationSnafu directly
 
-    // 设置托盘事件处理器
-    let proxy = event_loop.create_proxy();
+    let proxy_tray_event = event_loop.create_proxy();
     TrayIconEvent::set_event_handler(Some(move |event| {
-        proxy.send_event(UserEvent::TrayIconEvent(event));
+        if let Err(e) = proxy_tray_event
+            .send_event(UserEvent::TrayIconEvent(event))
+            .context(EventLoopSendSnafu)
+        {
+            // Use EventLoopSendSnafu directly
+            error!("Failed to send TrayIconEvent to event loop: {}", e);
+        }
     }));
 
-    let proxy = event_loop.create_proxy();
+    let proxy_menu_event = event_loop.create_proxy();
     TrayMenuEvent::set_event_handler(Some(move |event| {
-        proxy.send_event(UserEvent::MenuEvent(event));
+        if let Err(e) = proxy_menu_event
+            .send_event(UserEvent::MenuEvent(event))
+            .context(EventLoopSendSnafu)
+        {
+            // Use EventLoopSendSnafu directly
+            error!("Failed to send MenuEvent to event loop: {}", e);
+        }
     }));
 
     let mut app = Application::new();
 
-    // 设置定时器更新
-    let proxy = event_loop.create_proxy();
+    let proxy_timer = event_loop.create_proxy();
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(1));
-            proxy.send_event(UserEvent::UpdateTimer).unwrap();
+            if let Err(e) = proxy_timer
+                .send_event(UserEvent::UpdateTimer)
+                .context(EventLoopSendSnafu)
+            {
+                // Use EventLoopSendSnafu directly
+                error!(
+                    "Failed to send UpdateTimer event to event loop: {}. Timer thread exiting.",
+                    e
+                );
+                break;
+            }
         }
     });
 
-    if let Err(err) = event_loop.run_app(&mut app) {
-        error!("💥 应用程序运行错误: {:?}", err);
-    }
+    event_loop.run_app(&mut app).context(EventLoopCreationSnafu)?; // Use EventLoopCreationSnafu directly
+
+    Ok(())
 }
 
-fn load_icon(path: &std::path::Path) -> tray_icon::Icon {
-    let (icon_rgba, icon_width, icon_height) = {
-        let image = image::open(path).expect("Failed to open icon path").into_rgba8();
-        let (width, height) = image.dimensions();
-        let rgba = image.into_raw();
-        (rgba, width, height)
-    };
-    tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to open icon")
+fn load_icon(path: &std::path::Path) -> Result<tray_icon::Icon> {
+    let image = image::open(path)
+        .map_err(|e| Error::Image {
+            source: e,
+            backtrace: Backtrace::capture(),
+        })?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    tray_icon::Icon::from_rgba(rgba, width, height).context(IconConversionSnafu) // Use IconConversionSnafu directly
 }
 
-// macOS Dock 控制函数
 #[cfg(target_os = "macos")]
-fn set_dock_visibility(visible: bool) {
+fn set_dock_visibility(visible: bool) -> Result<()> {
     unsafe {
-        let mtm = MainThreadMarker::new().unwrap();
+        let mtm = MainThreadMarker::new().context(MainThreadMarkerSnafu)?; // Use MainThreadMarkerSnafu directly
         let app = NSApplication::sharedApplication(mtm);
         let policy = if visible {
             NSApplicationActivationPolicy::Regular
         } else {
             NSApplicationActivationPolicy::Accessory
         };
-
         app.setActivationPolicy(policy);
-
         if visible {
-            // 设置自定义 Dock 图标
-            set_dock_icon();
+            set_dock_icon()?;
             info!("✅ Dock 图标已显示，使用 dock.png");
         } else {
             info!("✅ Dock 图标已隐藏");
         }
     }
+    Ok(())
 }
 
-// 设置 Dock 图标为 dock.png
 #[cfg(target_os = "macos")]
-fn set_dock_icon() {
+fn set_dock_icon() -> Result<()> {
     use objc2::rc::Retained;
-
     unsafe {
-        let mtm = MainThreadMarker::new().unwrap();
+        let mtm = MainThreadMarker::new().context(MainThreadMarkerSnafu)?; // Use MainThreadMarkerSnafu directly
         let app = NSApplication::sharedApplication(mtm);
-
-        // 尝试加载 dock.png 图标
-        let dock_icon_path = "./assets/dock.png";
-
-        if std::path::Path::new(dock_icon_path).exists() {
-            // 获取绝对路径
-            let absolute_path = std::fs::canonicalize(dock_icon_path)
-                .unwrap_or_else(|_| std::path::PathBuf::from(dock_icon_path));
+        let dock_icon_path = std::path::Path::new("./assets/dock.png");
+        if dock_icon_path.exists() {
+            let absolute_path = std::fs::canonicalize(dock_icon_path).context(CanonicalizePathSnafu {
+                path: dock_icon_path.to_path_buf(),
+            })?; // Use CanonicalizePathSnafu directly
             let absolute_path_str = absolute_path.to_string_lossy();
-
-            // 创建 NSString 路径
             let path_str = NSString::from_str(&absolute_path_str);
-
-            // 创建 NSImage
             if let Some(image) = NSImage::initWithContentsOfFile(NSImage::alloc(), &path_str) {
-                // 设置应用程序图标
                 app.setApplicationIconImage(Some(&image));
                 info!("🖼️ 成功设置 Dock 图标为 dock.png");
             } else {
                 warn!("⚠️ 无法加载 dock.png 图像文件");
-                // 使用默认图标
-                set_default_dock_icon();
+                set_default_dock_icon()?;
             }
         } else {
-            warn!("⚠️ 找不到 dock.png 文件: {}", dock_icon_path);
-            // 使用默认图标
-            set_default_dock_icon();
+            warn!("⚠️ 找不到 dock.png 文件: {}", dock_icon_path.display());
+            set_default_dock_icon()?;
         }
     }
+    Ok(())
 }
 
-// 设置默认 Dock 图标
 #[cfg(target_os = "macos")]
-fn set_default_dock_icon() {
+fn set_default_dock_icon() -> Result<()> {
     unsafe {
-        let mtm = MainThreadMarker::new().unwrap();
+        let mtm = MainThreadMarker::new().context(MainThreadMarkerSnafu)?; // Use MainThreadMarkerSnafu directly
         let app = NSApplication::sharedApplication(mtm);
-        // 恢复默认应用程序图标
         app.setApplicationIconImage(None);
         info!("🔄 使用默认 Dock 图标");
     }
-}
-
-// 非 macOS 平台的空实现
-#[cfg(not(target_os = "macos"))]
-fn set_dock_visibility(visible: bool) {
-    if visible {
-        warn!("⚠️ 当前平台不支持显示 Dock 图标");
-    } else {
-        warn!("⚠️ 当前平台不支持隐藏 Dock 图标");
-    }
+    Ok(())
 }

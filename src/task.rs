@@ -1,4 +1,6 @@
 use std::time::{Duration, SystemTime};
+use crate::error::{Result, system_time_to_duration, SystemTimeSnafu}; // Import Result and helpers
+use snafu::{OptionExt, ResultExt}; // For .context on Option and Result
 
 #[derive(Debug, Clone)]
 pub enum TaskType {
@@ -17,20 +19,24 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(name: String, task_type: TaskType) -> Self {
+    // Changed to return Result to handle potential errors from duration_since
+    pub fn new(name: String, task_type: TaskType) -> Result<Self> {
         let remaining = match &task_type {
             TaskType::Duration(d) => *d,
-            TaskType::Deadline(t) => t.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO),
+            TaskType::Deadline(t) => {
+                system_time_to_duration(*t)? // Use helper
+                    .saturating_sub(system_time_to_duration(SystemTime::now())?) // Use helper
+            }
         };
 
-        Self {
+        Ok(Self {
             name,
             task_type,
             is_running: false,
             start_time: None,
             remaining,
             pinned: false,
-        }
+        })
     }
 
     pub fn start(&mut self) {
@@ -40,45 +46,50 @@ impl Task {
         }
     }
 
-    pub fn pause(&mut self) {
+    // Changed to return Result to handle potential errors from start.elapsed()
+    pub fn pause(&mut self) -> Result<()> {
         if self.is_running {
             self.is_running = false;
-            if let Some(start) = self.start_time
-                && let Ok(elapsed) = start.elapsed()
-            {
+            if let Some(start) = self.start_time {
+                let elapsed = start.elapsed().context(SystemTimeSnafu)?; // Handle error
                 self.remaining = self.remaining.saturating_sub(elapsed);
             }
             self.start_time = None;
         }
+        Ok(())
     }
 
-    pub fn reset(&mut self) {
+    // Changed to return Result to handle potential errors from duration_since
+    pub fn reset(&mut self) -> Result<()> {
         self.is_running = false;
         self.start_time = None;
         self.remaining = match &self.task_type {
             TaskType::Duration(d) => *d,
-            TaskType::Deadline(t) => t.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO),
+            TaskType::Deadline(t) => {
+                system_time_to_duration(*t)? // Use helper
+                    .saturating_sub(system_time_to_duration(SystemTime::now())?) // Use helper
+            }
         };
+        Ok(())
     }
 
-    pub fn get_remaining_time(&self) -> Duration {
+    // Changed to return Result to handle potential errors
+    pub fn get_remaining_time(&self) -> Result<Duration> {
         match &self.task_type {
             TaskType::Duration(_) => {
-                // 对于持续时间任务，只有在运行时才计算剩余时间
                 if !self.is_running {
-                    return self.remaining;
+                    return Ok(self.remaining);
                 }
 
-                if let Some(start) = self.start_time
-                    && let Ok(elapsed) = start.elapsed()
-                {
-                    return self.remaining.saturating_sub(elapsed);
+                if let Some(start) = self.start_time {
+                    let elapsed = start.elapsed().context(SystemTimeSnafu)?; // Handle error
+                    return Ok(self.remaining.saturating_sub(elapsed));
                 }
-                self.remaining
+                Ok(self.remaining)
             }
             TaskType::Deadline(deadline) => {
-                // 对于截止时间任务，始终计算到截止时间的剩余时间
-                deadline.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO)
+                Ok(system_time_to_duration(*deadline)? // Use helper
+                    .saturating_sub(system_time_to_duration(SystemTime::now())?)) // Use helper
             }
         }
     }

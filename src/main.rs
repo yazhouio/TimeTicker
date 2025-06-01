@@ -67,23 +67,7 @@ struct Application {
 impl Application {
     fn new() -> Self {
         // 创建一些测试任务
-        let test_tasks_results = vec![
-            Task::new(
-                "工作1".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
-            ),
-            Task::new("学习1".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
-            Task::new(
-                "工作2".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(7200)),
-            ),
-            Task::new("学习2".to_string(), TaskType::Duration(Duration::from_secs(15 * 60))),
-            Task::new(
-                "工作3".to_string(),
-                TaskType::Deadline(SystemTime::now() + Duration::from_secs(10800)),
-            ),
-            Task::new("学习3".to_string(), TaskType::Duration(Duration::from_secs(45 * 60))),
-        ];
+        let test_tasks_results: Vec<Result<Task>> = vec![];
 
         let test_tasks: Vec<Task> = test_tasks_results
             .into_iter()

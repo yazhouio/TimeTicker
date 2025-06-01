@@ -5,6 +5,7 @@ mod task;
 
 use std::{
     collections::HashMap,
+    process::Command,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
@@ -790,8 +791,8 @@ impl Application {
                 #[cfg(target_os = "macos")]
                 set_dock_icon();
             } else if action == "new_task" {
-                // TODO: 实现新建任务
-                println!("新建任务功能待实现");
+                // 实现新建任务功能
+                self.handle_new_task();
             } else if action.starts_with("task_") {
                 // 处理任务点击
                 println!("点击了任务");
@@ -927,6 +928,64 @@ impl Application {
             }
         }
     }
+
+    /// 处理新建任务
+    fn handle_new_task(&mut self) {
+        info!("📝 开始新建任务");
+
+        // 显示输入对话框
+        let input = show_input_dialog(
+            "新建任务",
+            "请输入任务信息：\n\n格式示例：\n• 时间段：1h30m#学习\n• 截止时间：@19:00#工作\n\n其中 # 后面是任务名称（可选）",
+            "1h#新任务"
+        );
+
+        match input {
+            Some(user_input) => {
+                info!("用户输入: {}", user_input);
+
+                // 解析用户输入
+                match parse_time_input(&user_input) {
+                    Ok((task_name, task_type)) => {
+                        // 创建新任务
+                        let new_task = Task::new(task_name.clone(), task_type);
+
+                        // 添加到任务列表
+                        if let Ok(mut tasks) = self.tasks.lock() {
+                            tasks.push(new_task);
+                            info!("✅ 成功创建任务: {}", task_name);
+                        } else {
+                            error!("❌ 无法获取任务列表锁");
+                            return;
+                        }
+
+                        // 刷新菜单以显示新任务
+                        self.refresh_menu();
+                        info!("🔄 菜单已刷新");
+                    }
+                    Err(e) => {
+                        error!("❌ 解析任务输入失败: {}", e);
+
+                        // 显示错误信息给用户
+                        #[cfg(target_os = "macos")]
+                        {
+                            let error_script = format!(
+                                r#"display dialog "解析任务输入失败：\n\n{}\n\n请检查输入格式：\n• 时间段：1h30m#任务名\n• 截止时间：@19:00#任务名" with title "输入错误" buttons {{"确定"}} default button "确定" with icon stop"#,
+                                e
+                            );
+                            let _ = Command::new("osascript")
+                                .arg("-e")
+                                .arg(&error_script)
+                                .output();
+                        }
+                    }
+                }
+            }
+            None => {
+                info!("用户取消了新建任务");
+            }
+        }
+    }
 }
 
 impl ApplicationHandler<UserEvent> for Application {
@@ -1004,6 +1063,50 @@ fn format_remaining_time(duration: Duration) -> String {
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+/// 显示输入对话框获取用户输入
+/// 返回 Some(input) 如果用户输入了内容，None 如果用户取消
+#[cfg(target_os = "macos")]
+fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<String> {
+    let script = format!(
+        r#"display dialog "{}" with title "{}" default answer "{}" buttons {{"取消", "确定"}} default button "确定""#,
+        message, title, default_text
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
+
+    match output {
+        Ok(result) => {
+            if result.status.success() {
+                let output_str = String::from_utf8_lossy(&result.stdout);
+                // AppleScript 返回格式: "button returned:确定, text returned:用户输入"
+                if let Some(text_part) = output_str.split("text returned:").nth(1) {
+                    let user_input = text_part.trim().to_string();
+                    if !user_input.is_empty() {
+                        return Some(user_input);
+                    }
+                }
+            }
+            None
+        }
+        Err(e) => {
+            error!("显示输入对话框失败: {}", e);
+            None
+        }
+    }
+}
+
+/// 非 macOS 平台的输入对话框实现（简化版）
+#[cfg(not(target_os = "macos"))]
+fn show_input_dialog(title: &str, message: &str, default_text: &str) -> Option<String> {
+    // 在非 macOS 平台，我们可以使用标准输入或其他方法
+    // 这里先返回一个默认值作为示例
+    warn!("输入对话框在此平台不支持，使用默认值");
+    Some(default_text.to_string())
 }
 
 fn main() {

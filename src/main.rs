@@ -26,9 +26,11 @@ use winit::{
 
 // macOS 特定导入，用于 Dock 控制
 #[cfg(target_os = "macos")]
-use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSImage};
 #[cfg(target_os = "macos")]
-use objc::runtime::Object;
+use objc2_foundation::{NSString, NSData, MainThreadMarker};
+#[cfg(target_os = "macos")]
+use objc2::{msg_send_id, ClassType};
 
 #[derive(Debug)]
 enum UserEvent {
@@ -1067,20 +1069,16 @@ fn load_icon(path: &std::path::Path) -> tray_icon::Icon {
 // macOS Dock 控制函数
 #[cfg(target_os = "macos")]
 fn set_dock_visibility(visible: bool) {
-    use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSImage};
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::{NSString, NSData};
-    use objc::runtime::Object;
-
     unsafe {
-        let app = NSApp();
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
         let policy = if visible {
-            NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular
+            NSApplicationActivationPolicy::Regular
         } else {
-            NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory
+            NSApplicationActivationPolicy::Accessory
         };
 
-        app.setActivationPolicy_(policy);
+        app.setActivationPolicy(policy);
 
         if visible {
             // 设置自定义 Dock 图标
@@ -1095,13 +1093,11 @@ fn set_dock_visibility(visible: bool) {
 // 设置 Dock 图标为 dock.png
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use cocoa::appkit::{NSApp, NSImage};
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::NSString;
-    use objc::{msg_send, sel, sel_impl};
+    use objc2::rc::Retained;
 
     unsafe {
-        let app = NSApp();
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
 
         // 尝试加载 dock.png 图标
         let dock_icon_path = "./assets/dock.png";
@@ -1113,15 +1109,12 @@ fn set_dock_icon() {
             let absolute_path_str = absolute_path.to_string_lossy();
 
             // 创建 NSString 路径
-            let path_str = NSString::alloc(nil).init_str(&absolute_path_str);
+            let path_str = NSString::from_str(&absolute_path_str);
 
             // 创建 NSImage
-            let image: id = NSImage::alloc(nil);
-            let image: id = msg_send![image, initWithContentsOfFile: path_str];
-
-            if image != nil {
+            if let Some(image) = NSImage::initWithContentsOfFile(NSImage::alloc(), &path_str) {
                 // 设置应用程序图标
-                let _: () = msg_send![app, setApplicationIconImage: image];
+                app.setApplicationIconImage(Some(&image));
                 info!("🖼️ 成功设置 Dock 图标为 dock.png");
             } else {
                 warn!("⚠️ 无法加载 dock.png 图像文件");
@@ -1139,14 +1132,11 @@ fn set_dock_icon() {
 // 设置默认 Dock 图标
 #[cfg(target_os = "macos")]
 fn set_default_dock_icon() {
-    use cocoa::appkit::NSApp;
-    use cocoa::base::nil;
-    use objc::{msg_send, sel, sel_impl};
-
     unsafe {
-        let app = NSApp();
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
         // 恢复默认应用程序图标
-        let _: () = msg_send![app, setApplicationIconImage: nil];
+        app.setApplicationIconImage(None);
         info!("🔄 使用默认 Dock 图标");
     }
 }

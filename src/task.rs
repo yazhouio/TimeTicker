@@ -62,15 +62,24 @@ impl Task {
     }
 
     pub fn get_remaining_time(&self) -> Duration {
-        if !self.is_running {
-            return self.remaining;
-        }
+        match &self.task_type {
+            TaskType::Duration(_) => {
+                // 对于持续时间任务，只有在运行时才计算剩余时间
+                if !self.is_running {
+                    return self.remaining;
+                }
 
-        if let Some(start) = self.start_time
-            && let Ok(elapsed) = start.elapsed()
-        {
-            return self.remaining.saturating_sub(elapsed);
+                if let Some(start) = self.start_time
+                    && let Ok(elapsed) = start.elapsed()
+                {
+                    return self.remaining.saturating_sub(elapsed);
+                }
+                self.remaining
+            }
+            TaskType::Deadline(deadline) => {
+                // 对于截止时间任务，始终计算到截止时间的剩余时间
+                deadline.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO)
+            }
         }
-        self.remaining
     }
 }

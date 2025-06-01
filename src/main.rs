@@ -24,6 +24,12 @@ use winit::{
     window::Window,
 };
 
+// macOS 特定导入，用于 Dock 控制
+#[cfg(target_os = "macos")]
+use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
+#[cfg(target_os = "macos")]
+use objc::runtime::Object;
+
 #[derive(Debug)]
 enum UserEvent {
     TrayIconEvent(tray_icon::TrayIconEvent),
@@ -57,6 +63,24 @@ impl Application {
             ),
             // 添加一个30分钟的番茄钟任务（暂停状态）
             Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
+              Task::new(
+                "工作".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            ),
+            // 添加一个30分钟的番茄钟任务（暂停状态）
+            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
+              Task::new(
+                "工作".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            ),
+            // 添加一个30分钟的番茄钟任务（暂停状态）
+            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
+              Task::new(
+                "工作".to_string(),
+                TaskType::Deadline(SystemTime::now() + Duration::from_secs(3600)),
+            ),
+            // 添加一个30分钟的番茄钟任务（暂停状态）
+            Task::new("学习".to_string(), TaskType::Duration(Duration::from_secs(30 * 60))),
         ];
 
         Self {
@@ -72,7 +96,7 @@ impl Application {
     }
 
     fn new_tray_icon(&mut self) -> TrayIcon {
-        let path = "./assets/icon.jpg";
+        let path = "./assets/logo.png";
         let icon = load_icon(std::path::Path::new(path));
 
         let menu = self.build_menu();
@@ -81,7 +105,6 @@ impl Application {
             .with_menu(Box::new(menu))
             .with_tooltip("Time Ticker")
             .with_icon(icon)
-            .with_title("⏰")
             .build()
             .unwrap()
     }
@@ -177,6 +200,37 @@ impl Application {
         self.menu_ids.insert(new_task_id, "new_task".to_string());
         menu.append(&new_task).unwrap();
 
+        // 添加设置选项
+        let settings_submenu = Submenu::new("⚙️ 设置", true);
+
+        // Dock 设置
+        let dock_submenu = Submenu::new("🖥️ Dock 设置", true);
+
+        let show_dock = MenuItem::new("显示在 Dock 中", true, None);
+        let show_dock_id = show_dock.id().clone();
+        self.menu_ids.insert(show_dock_id, "dock_show".to_string());
+        dock_submenu.append(&show_dock).unwrap();
+
+        let hide_dock = MenuItem::new("隐藏 Dock 图标", true, None);
+        let hide_dock_id = hide_dock.id().clone();
+        self.menu_ids.insert(hide_dock_id, "dock_hide".to_string());
+        dock_submenu.append(&hide_dock).unwrap();
+
+        // 添加分隔线
+        dock_submenu.append(&PredefinedMenuItem::separator()).unwrap();
+
+        // 添加测试图标设置
+        let test_icon = MenuItem::new("🔄 重新设置 dock.png", true, None);
+        let test_icon_id = test_icon.id().clone();
+        self.menu_ids.insert(test_icon_id, "dock_test_icon".to_string());
+        dock_submenu.append(&test_icon).unwrap();
+
+        settings_submenu.append(&dock_submenu).unwrap();
+        menu.append(&settings_submenu).unwrap();
+
+        // 添加分隔线
+        menu.append(&PredefinedMenuItem::separator()).unwrap();
+
         // 添加退出选项
         let quit = MenuItem::new("退出", true, None);
         let quit_id = quit.id().clone();
@@ -229,7 +283,7 @@ impl Application {
     }
 
     fn create_pinned_tray_icon(&mut self, task_index: usize) {
-        let path = "./assets/icon.jpg";
+        let path = "./assets/logo.png";
         let icon = load_icon(std::path::Path::new(path));
 
         // 先获取任务信息，然后释放锁
@@ -723,6 +777,16 @@ impl Application {
             debug!("找到对应动作: {}", action);
             if action == "quit" {
                 std::process::exit(0);
+            } else if action == "dock_show" {
+                info!("🖥️ 显示 Dock 图标");
+                set_dock_visibility(true);
+            } else if action == "dock_hide" {
+                info!("🖥️ 隐藏 Dock 图标");
+                set_dock_visibility(false);
+            } else if action == "dock_test_icon" {
+                info!("🔄 手动重新设置 Dock 图标");
+                #[cfg(target_os = "macos")]
+                set_dock_icon();
             } else if action == "new_task" {
                 // TODO: 实现新建任务
                 println!("新建任务功能待实现");
@@ -878,6 +942,7 @@ impl ApplicationHandler<UserEvent> for Application {
 
     fn new_events(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, cause: winit::event::StartCause) {
         if winit::event::StartCause::Init == cause {
+            // Dock 图标已在 main 函数中预设置，这里只创建托盘图标
             self.tray_icon = Some(self.new_tray_icon());
 
             #[cfg(target_os = "macos")]
@@ -953,6 +1018,13 @@ fn main() {
 
     info!("🚀 TimeTicker 应用程序启动");
 
+    // 在应用程序启动的最早阶段设置 Dock 图标，减少可见延迟
+    #[cfg(target_os = "macos")]
+    {
+        info!("🔧 预设置 Dock 图标，减少启动延迟");
+        set_dock_visibility(true);
+    }
+
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
 
     // 设置托盘事件处理器
@@ -990,4 +1062,101 @@ fn load_icon(path: &std::path::Path) -> tray_icon::Icon {
         (rgba, width, height)
     };
     tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to open icon")
+}
+
+// macOS Dock 控制函数
+#[cfg(target_os = "macos")]
+fn set_dock_visibility(visible: bool) {
+    use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSImage};
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSString, NSData};
+    use objc::runtime::Object;
+
+    unsafe {
+        let app = NSApp();
+        let policy = if visible {
+            NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular
+        } else {
+            NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory
+        };
+
+        app.setActivationPolicy_(policy);
+
+        if visible {
+            // 设置自定义 Dock 图标
+            set_dock_icon();
+            info!("✅ Dock 图标已显示，使用 dock.png");
+        } else {
+            info!("✅ Dock 图标已隐藏");
+        }
+    }
+}
+
+// 设置 Dock 图标为 dock.png
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use cocoa::appkit::{NSApp, NSImage};
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        let app = NSApp();
+
+        // 尝试加载 dock.png 图标
+        let dock_icon_path = "./assets/dock.png";
+
+        if std::path::Path::new(dock_icon_path).exists() {
+            // 获取绝对路径
+            let absolute_path = std::fs::canonicalize(dock_icon_path)
+                .unwrap_or_else(|_| std::path::PathBuf::from(dock_icon_path));
+            let absolute_path_str = absolute_path.to_string_lossy();
+
+            // 创建 NSString 路径
+            let path_str = NSString::alloc(nil).init_str(&absolute_path_str);
+
+            // 创建 NSImage
+            let image: id = NSImage::alloc(nil);
+            let image: id = msg_send![image, initWithContentsOfFile: path_str];
+
+            if image != nil {
+                // 设置应用程序图标
+                let _: () = msg_send![app, setApplicationIconImage: image];
+                info!("🖼️ 成功设置 Dock 图标为 dock.png");
+            } else {
+                warn!("⚠️ 无法加载 dock.png 图像文件");
+                // 使用默认图标
+                set_default_dock_icon();
+            }
+        } else {
+            warn!("⚠️ 找不到 dock.png 文件: {}", dock_icon_path);
+            // 使用默认图标
+            set_default_dock_icon();
+        }
+    }
+}
+
+// 设置默认 Dock 图标
+#[cfg(target_os = "macos")]
+fn set_default_dock_icon() {
+    use cocoa::appkit::NSApp;
+    use cocoa::base::nil;
+    use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        let app = NSApp();
+        // 恢复默认应用程序图标
+        let _: () = msg_send![app, setApplicationIconImage: nil];
+        info!("🔄 使用默认 Dock 图标");
+    }
+}
+
+// 非 macOS 平台的空实现
+#[cfg(not(target_os = "macos"))]
+fn set_dock_visibility(visible: bool) {
+    if visible {
+        warn!("⚠️ 当前平台不支持显示 Dock 图标");
+    } else {
+        warn!("⚠️ 当前平台不支持隐藏 Dock 图标");
+    }
 }
